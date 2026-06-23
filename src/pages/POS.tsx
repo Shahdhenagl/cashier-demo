@@ -1,0 +1,1959 @@
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useStore } from '../store/useStore';
+import { ShoppingCart, Search, Plus, Minus, Trash2, Banknote, RefreshCcw, Moon, Sun, ArrowRightLeft, X, Printer, CreditCard, Smartphone, Zap, ScanLine, Camera, Box, Check, ChevronRight, ChevronLeft, FileText, MessageSquare, Send, Wallet } from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
+import { normalizeArabic } from '../utils/textUtils';
+
+
+export default function POS() {
+  const { products, categories, cart, addToCart, removeFromCart, updateQuantity, updatePrice, clearCart, checkout, processReturn, storeSettings, orders, activeInvoiceId, customers, activeCashier, logoutPOS, isOnline, offlineQueue, offlineReturnsQueue, isSyncing, syncOfflineQueue, syncOfflineReturnsQueue, addCashierNote, addExpense } = useStore();
+  const navigate = useNavigate();
+
+  const [activeCategory, setActiveCategory] = useState<string>('all');
+  const categoriesRef = useRef<HTMLDivElement>(null);
+
+  const scrollCategories = (direction: 'left' | 'right') => {
+    if (categoriesRef.current) {
+      const scrollAmount = 200;
+      categoriesRef.current.scrollBy({
+        left: direction === 'left' ? -scrollAmount : scrollAmount,
+        behavior: 'smooth'
+      });
+    }
+  };
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [scanStatus, setScanStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
+  // Mobile Responsiveness & Camera Scanner States
+  const [mobileView, setMobileView] = useState<'catalog' | 'cart'>('catalog');
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
+  const [scannedProduct, setScannedProduct] = useState<any>(null);
+  const [scanQty, setScanQty] = useState(1);
+  const [html5QrCode, setHtml5QrCode] = useState<Html5Qrcode | null>(null);
+
+  const playSuccessSound = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(800, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } catch (e) {
+      console.log('Audio not supported', e);
+    }
+  };
+
+  const playErrorSound = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(300, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.2);
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.3);
+    } catch (e) {
+      console.log('Audio not supported', e);
+    }
+  };
+
+  const handleBarcodeScan = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const code = barcodeInput.trim();
+      if (!code) return;
+
+      const product = products.find(p => p.barcode === code);
+      if (product) {
+        playSuccessSound();
+        addToCart(product);
+        setBarcodeInput('');
+        setScanStatus('success');
+        setTimeout(() => setScanStatus('idle'), 1000);
+      } else {
+        playErrorSound();
+        setScanStatus('error');
+        setTimeout(() => setScanStatus('idle'), 1000);
+      }
+    }
+  };
+
+  // Customer details for checkout
+  const [customerId, setCustomerId] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [paidCash, setPaidCash] = useState('');
+  const [deferredNote, setDeferredNote] = useState('');
+  const [paidVisa, setPaidVisa] = useState('');
+  const [paidWallet, setPaidWallet] = useState('');
+  const [paidInstapay, setPaidInstapay] = useState('');
+  const [discountStr, setDiscountStr] = useState('');
+  const [couponInput, setCouponInput] = useState('');
+  const [customerDebt, setCustomerDebt] = useState<number>(0);
+
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [showReturnsModal, setShowReturnsModal] = useState(false);
+  const [returnSearchQuery, setReturnSearchQuery] = useState('');
+  const [activeReturnOrder, setActiveReturnOrder] = useState<any>(null);
+  const [pendingReturns, setPendingReturns] = useState<Record<string, { returnQty: number, refundAmount: number, returnType?: 'debt' | 'cash' }>>({});
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [lastInvoiceId, setLastInvoiceId] = useState('');
+  const [lastCustomerInfo, setLastCustomerInfo] = useState<any>(null);
+  const [lastOrderDetails, setLastOrderDetails] = useState<any>(null);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const [shouldPrint, setShouldPrint] = useState(false);
+  const [showNoteModal, setShowNoteModal] = useState(false);
+  const [noteText, setNoteText] = useState('');
+  const [isSendingNote, setIsSendingNote] = useState(false);
+  const [showFinanceModal, setShowFinanceModal] = useState(false);
+  const [financeType, setFinanceType] = useState<'expense' | 'income' | 'transfer'>('expense');
+  const [financeCategory, setFinanceCategory] = useState('عام');
+  const [financeCash, setFinanceCash] = useState('');
+  const [financeVisa, setFinanceVisa] = useState('');
+  const [financeWallet, setFinanceWallet] = useState('');
+  const [financeInstapay, setFinanceInstapay] = useState('');
+  const [financeNote, setFinanceNote] = useState('');
+  const [financeTransferFrom, setFinanceTransferFrom] = useState('instapay');
+  const [financeTransferTo, setFinanceTransferTo] = useState('cash');
+  const [financeTransferAmount, setFinanceTransferAmount] = useState('');
+  const [isSubmittingFinance, setIsSubmittingFinance] = useState(false);
+
+  const handleSendNote = async () => {
+    if (!noteText.trim()) return;
+    setIsSendingNote(true);
+    try {
+      const actorName = activeCashier?.name || 'كاشير';
+      // 1. Send Telegram Alert
+      await fetch('/api/telegram-alert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'custom_note',
+          actor: actorName,
+          date: new Date().toISOString(),
+          noteText: noteText.trim()
+        })
+      });
+
+      // 2. Save note to database
+      await addCashierNote(actorName, noteText.trim());
+
+      alert('تم إرسال الرسالة بنجاح');
+      setShowNoteModal(false);
+      setNoteText('');
+    } catch (e) {
+      alert('حدث خطأ أثناء الإرسال');
+    } finally {
+      setIsSendingNote(false);
+    }
+  };
+
+  const handleFinanceSubmit = async () => {
+    const actorName = activeCashier?.name || 'كاشير';
+    setIsSubmittingFinance(true);
+    try {
+      if (financeType === 'transfer') {
+        const amt = parseFloat(financeTransferAmount) || 0;
+        if (amt <= 0) { alert('يرجى إدخال مبلغ صحيح'); return; }
+        if (financeTransferFrom === financeTransferTo) { alert('لا يمكن التحويل لنفس وسيلة الدفع'); return; }
+        const splits = { cash: 0, visa: 0, wallet: 0, instapay: 0 };
+        splits[financeTransferFrom as keyof typeof splits] = -amt;
+        splits[financeTransferTo as keyof typeof splits] = amt;
+        await addExpense({
+          category: 'تحويل داخلي',
+          amount: 0,
+          paid_cash: splits.cash,
+          paid_visa: splits.visa,
+          paid_wallet: splits.wallet,
+          paid_instapay: splits.instapay,
+          note: financeNote || `تحويل ${amt} من ${financeTransferFrom === 'cash' ? 'كاش' : financeTransferFrom === 'visa' ? 'فيزا' : financeTransferFrom === 'wallet' ? 'محفظة' : 'انستاباي'} إلى ${financeTransferTo === 'cash' ? 'كاش' : financeTransferTo === 'visa' ? 'فيزا' : financeTransferTo === 'wallet' ? 'محفظة' : 'انستاباي'} - بواسطة ${actorName}`,
+          payment_method: 'cash'
+        } as any);
+        // Send telegram
+        fetch('/api/telegram-alert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'transfer',
+            actor: actorName,
+            date: new Date().toISOString(),
+            description: `تحويل ${amt} من ${financeTransferFrom === 'cash' ? 'كاش' : financeTransferFrom === 'visa' ? 'فيزا' : financeTransferFrom === 'wallet' ? 'محفظة' : 'انستاباي'} إلى ${financeTransferTo === 'cash' ? 'كاش' : financeTransferTo === 'visa' ? 'فيزا' : financeTransferTo === 'wallet' ? 'محفظة' : 'انستاباي'}`,
+            amount: amt,
+            noteText: financeNote || ''
+          })
+        }).catch(() => {});
+      } else {
+        const cash = parseFloat(financeCash) || 0;
+        const visa = parseFloat(financeVisa) || 0;
+        const wallet = parseFloat(financeWallet) || 0;
+        const insta = parseFloat(financeInstapay) || 0;
+        const total = cash + visa + wallet + insta;
+        if (total <= 0) { alert('يرجى إدخال مبالغ الدفع أولاً'); return; }
+        const multiplier = financeType === 'income' ? -1 : 1;
+        await addExpense({
+          category: financeCategory,
+          amount: total * multiplier,
+          paid_cash: cash * multiplier,
+          paid_visa: visa * multiplier,
+          paid_wallet: wallet * multiplier,
+          paid_instapay: insta * multiplier,
+          note: (financeNote || (financeType === 'income' ? 'إيراد' : 'مصروف')) + ` - بواسطة ${actorName}`,
+          payment_method: [
+            { name: 'cash', amount: cash }, { name: 'visa', amount: visa }, { name: 'wallet', amount: wallet }, { name: 'instapay', amount: insta }
+          ].sort((a, b) => b.amount - a.amount)[0].name
+        } as any);
+        // Send telegram
+        fetch('/api/telegram-alert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: financeType === 'income' ? 'cashier_income' : 'cashier_expense',
+            actor: actorName,
+            date: new Date().toISOString(),
+            amount: total,
+            description: `${financeType === 'income' ? 'إيراد' : 'مصروف'}: ${financeCategory}`,
+            noteText: financeNote || '',
+            paymentMethod: cash > 0 ? 'كاش' : visa > 0 ? 'فيزا' : wallet > 0 ? 'محفظة' : 'انستاباي'
+          })
+        }).catch(() => {});
+      }
+      alert('تم تسجيل المعاملة بنجاح');
+      setShowFinanceModal(false);
+      setFinanceCash(''); setFinanceVisa(''); setFinanceWallet(''); setFinanceInstapay('');
+      setFinanceNote(''); setFinanceTransferAmount(''); setFinanceCategory('عام');
+      setFinanceType('expense');
+    } catch (e) {
+      console.error(e);
+      alert('حدث خطأ أثناء حفظ المعاملة');
+    } finally {
+      setIsSubmittingFinance(false);
+    }
+  };
+
+  // Camera Scanner Logic
+  useEffect(() => {
+    let scanner: Html5Qrcode | null = null;
+    
+    if (showCameraScanner && !html5QrCode) {
+      scanner = new Html5Qrcode("reader");
+      setHtml5QrCode(scanner);
+      scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (decodedText: string) => {
+          if (scanner && scanner.getState() === 2) { // 2 = SCANNING
+            scanner.pause();
+          }
+          const product = useStore.getState().products.find(p => p.barcode === decodedText);
+          if (product) {
+            playSuccessSound();
+            setScannedProduct(product);
+            setScanQty(1);
+          } else {
+            playErrorSound();
+            alert('لم يتم العثور على المنتج');
+            if (scanner && scanner.getState() === 3) { // 3 = PAUSED
+              scanner.resume();
+            }
+          }
+        },
+        (_error: any) => {
+          // ignore continuous scan errors
+        }
+      ).catch((err: any) => {
+        console.error(err);
+        alert('حدث خطأ في تشغيل الكاميرا، تأكد من إعطاء الصلاحيات.');
+        setShowCameraScanner(false);
+      });
+    }
+
+    return () => {
+      // Cleanup is handled manually in handleCloseCamera to avoid unmount race conditions
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCameraScanner]);
+
+  const handleConfirmScanAdd = () => {
+    if (scannedProduct) {
+      for (let i = 0; i < scanQty; i++) {
+        addToCart(scannedProduct);
+      }
+      setScannedProduct(null);
+      if (html5QrCode && html5QrCode.getState() === 3) {
+        html5QrCode.resume();
+      }
+    }
+  };
+
+  const handleCloseCamera = () => {
+    if (html5QrCode) {
+      if (html5QrCode.getState() === 2 || html5QrCode.getState() === 3) {
+        html5QrCode.stop().then(() => {
+          html5QrCode.clear();
+          setHtml5QrCode(null);
+          setShowCameraScanner(false);
+          setScannedProduct(null);
+        }).catch(console.error);
+      } else {
+        html5QrCode.clear();
+        setHtml5QrCode(null);
+        setShowCameraScanner(false);
+        setScannedProduct(null);
+      }
+    } else {
+      setShowCameraScanner(false);
+      setScannedProduct(null);
+    }
+  };
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDarkMode]);
+
+  const toggleTheme = () => setIsDarkMode(!isDarkMode);
+
+  // Online/Offline sync listener
+  useEffect(() => {
+    const handleOnline = () => {
+      useStore.setState({ isOnline: true });
+      syncOfflineQueue();
+      syncOfflineReturnsQueue();
+    };
+    const handleOffline = () => {
+      useStore.setState({ isOnline: false });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Initial check
+    useStore.setState({ isOnline: navigator.onLine });
+    if (navigator.onLine) {
+      syncOfflineQueue();
+      syncOfflineReturnsQueue();
+    }
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSearchOrder = () => {
+    const order = orders.find(o => o.id.toLowerCase() === returnSearchQuery.toLowerCase());
+    if (order) {
+      setActiveReturnOrder(order);
+      setPendingReturns({});
+    } else {
+      alert("لم يتم العثور على فاتورة بهذا الرقم");
+      setActiveReturnOrder(null);
+      setPendingReturns({});
+    }
+  };
+
+  const handleConfirmReturns = async () => {
+    if (!activeReturnOrder) return;
+    
+    const itemsSum = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.quantity * item.sale_price), 0);
+    const dr = itemsSum > 0 ? activeReturnOrder.total / itemsSum : 1;
+
+    const returnsArray = Object.keys(pendingReturns).map(productId => {
+       const pr = pendingReturns[productId];
+       const item = activeReturnOrder.items.find((i: any) => i.id === productId);
+       const effectivePrice = item ? item.sale_price * dr : 0;
+       return {
+         productId,
+         returnQty: pr.returnQty,
+         refundAmount: pr.refundAmount,
+         debtDeduction: pr.returnType === 'debt' ? pr.returnQty * effectivePrice : 0
+       };
+    }).filter(r => r.returnQty > 0);
+
+    if (returnsArray.length === 0) {
+       alert("الرجاء تحديد كميات للإرجاع");
+       return;
+    }
+
+    if (!confirm("هل أنت متأكد من تأكيد هذه المرتجعات؟")) return;
+
+    const success = await processReturn(activeReturnOrder.id, returnsArray);
+    if (success) {
+      alert('تم إرجاع المنتجات المحددة بنجاح!');
+      const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
+      setActiveReturnOrder(updatedOrder);
+      setPendingReturns({});
+    } else {
+      alert("حدث خطأ أثناء الإرجاع. قد تكون الكمية غير متاحة.");
+    }
+  };
+
+  const printInvoice = (invId: string, orderDetails: any) => {
+    const currentSettings = { ...storeSettings };
+    const printDate = new Date().toLocaleString('ar-EG', { calendar: 'gregory', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const itemsHtml = orderDetails.cart.map((item: any, index: number) =>
+      `<tr>
+        <td style="padding:10px 4px;border-bottom:1px solid #eee;text-align:center;font-weight:bold;color:#666;">${index + 1}</td>
+        <td style="padding:10px 4px;border-bottom:1px solid #eee;font-weight:900;font-size:14px;">${item.name}</td>
+        <td style="padding:10px 4px;border-bottom:1px solid #eee;text-align:center;font-weight:bold;">${item.quantity}</td>
+        <td style="padding:10px 4px;border-bottom:1px solid #eee;text-align:center;font-weight:bold;">${item.sale_price.toFixed(2)}</td>
+        <td style="padding:10px 4px;border-bottom:1px solid #eee;text-align:left;font-weight:black;font-size:15px;">${(item.sale_price * item.quantity).toFixed(2)}</td>
+      </tr>`
+    ).join('');
+
+    const invoiceUrl = `${window.location.origin}/view-invoice/${invId}`;
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(invoiceUrl)}`;
+
+    const customerBlock = (orderDetails.customerName || orderDetails.customerPhone || orderDetails.customId)
+      ? `<div class="customer-info-grid">
+            <div class="info-item"><strong>اسم العميل:</strong> <span>${orderDetails.customerName || '—'}</span></div>
+            <div class="info-item"><strong>رقم الهاتف:</strong> <span dir="ltr">${orderDetails.customerPhone || '—'}</span></div>
+            <div class="info-item"><strong>رقم الكارت (ID):</strong> <span dir="ltr">${orderDetails.customId || orderDetails.customerId?.substring(0, 8) || '—'}</span></div>
+            <div class="info-item"><strong>رقم الفاتورة:</strong> <span>#${invId}</span></div>
+            <div class="info-item"><strong>المسؤول:</strong> <span>${activeCashier?.name || '—'}</span></div>
+            <div class="info-item"><strong>التاريخ:</strong> <span>${printDate}</span></div>
+            <div class="info-item" style="grid-column: span 2; border-top: 1px dashed #e2e8f0; padding-top: 4px; margin-top: 2px;">
+              <strong>إجمالي المديونية الحالية:</strong> 
+              <span style="color: #dc2626; font-size: 14px;">${(orderDetails.totalDebt || 0).toFixed(2)} ${currentSettings.currency}</span>
+            </div>
+         </div>`
+      : `<div class="customer-info-grid">
+            <div class="info-item"><strong>اسم العميل:</strong> <span>عميل نقدي</span></div>
+            <div class="info-item"><strong>رقم الفاتورة:</strong> <span>#${invId}</span></div>
+            <div class="info-item"><strong>المسؤول:</strong> <span>${activeCashier?.name || '—'}</span></div>
+            <div class="info-item"><strong>التاريخ:</strong> <span>${printDate}</span></div>
+         </div>`;
+
+    const html = `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8"/>
+<title>فاتورة بيع #${invId}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;font-family:'Cairo', sans-serif;}
+  body{background:#fff;color:#1e293b;padding:0;margin:0;}
+  .invoice-container{width:148mm;min-height:100mm;margin:0 auto;padding:5mm;position:relative;display:flex;flex-direction:column;gap:5px;}
+  
+  .header-main{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1e293b;padding-bottom:5px;margin-bottom:5px;}
+  .logo{width:80px;height:80px;object-fit:contain;border-radius:12px;border:1px solid #e2e8f0;padding:2px;background:#fff;}
+  .store-name{font-size:24px;font-weight:900;color:#1e293b;line-height:1.2;}
+  .store-details{font-size:10px;color:#64748b;margin-top:3px;line-height:1.3;font-weight:bold;}
+  .store-info-center{flex:1;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 10px;}
+  
+  
+  .customer-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px;background:#f8fafc;padding:8px;border-radius:10px;border:1px solid #e2e8f0;}
+  .info-item{font-size:12px;display:flex;gap:6px;}
+  .info-item strong{color:#64748b;white-space:nowrap;}
+  .info-item span{color:#1e293b;font-weight:700;}
+  
+  .qr-code-container{display:flex;flex-direction:column;align-items:center;gap:3px;}
+  .qr-code-img{width:80px;height:80px;padding:3px;background:#fff;border-radius:10px;border:1px solid #e2e8f0;box-shadow: 0 1px 3px rgba(0,0,0,0.1);}
+  .qr-label{font-size:10px;font-weight:900;color:#1e293b;text-align:center;margin-top:2px;background:#f1f5f9;padding:2px 8px;border-radius:4px;}
+
+  table{width:100%;border-collapse:collapse;margin-bottom:5px;}
+  thead th{background:#f1f5f9;color:#475569;font-size:12px;padding:8px 6px;text-align:center;border-bottom:2px solid #cbd5e1;}
+  thead th:nth-child(2){text-align:right;}
+  thead th:last-child{text-align:left;}
+  
+  .summary-section{margin-right:auto;width:60%;margin-top:5px;}
+  .summary-row{display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-bottom:1px solid #f1f5f9;}
+  .summary-row.total{border-top:2px solid #1e293b;border-bottom:none;margin-top:3px;font-size:18px;font-weight:900;color:#1e293b;}
+  
+  .payment-status{margin-top:8px;padding:6px;border-radius:6px;text-align:center;font-weight:bold;font-size:13px;}
+  .status-paid{background:#ecfdf5;color:#059669;border:1px solid #a7f3d0;}
+  .status-debt{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}
+  
+  .footer{text-align:center;margin-top:15px;padding-top:10px;border-top:1px dashed #cbd5e1;font-size:11px;color:#94a3b8;font-weight:bold;}
+  
+  @media print{
+    @page{size:A5;margin:0;}
+    body{-webkit-print-color-adjust:exact;}
+    .invoice-container{width:148mm;height:auto;padding:5mm;}
+  }
+</style>
+</head>
+<body>
+<div class="invoice-container">
+  <div class="header-main">
+    <img class="logo" src="${currentSettings.logo}" onerror="this.style.display='none'" />
+    
+    <div class="store-info-center">
+      <div class="store-name">${currentSettings.name}</div>
+      <div class="store-details">
+        ${currentSettings.address ? `📍 ${currentSettings.address}<br/>` : ''}
+        ${currentSettings.phone ? `📞 ${currentSettings.phone}` : ''}
+        ${currentSettings.phone2 ? ` | ${currentSettings.phone2}` : ''}
+      </div>
+    </div>
+
+    <div class="qr-code-container">
+      <img class="qr-code-img" src="${qrCodeUrl}" alt="QR Code" />
+      <div class="qr-label">تفاصيل الفاتورة</div>
+    </div>
+  </div>
+
+  ${customerBlock}
+
+  <table>
+    <thead><tr>
+      <th style="width:40px">#</th>
+      <th style="text-align:right">البيان / المنتج</th>
+      <th style="width:60px">الكمية</th>
+      <th style="width:80px">السعر</th>
+      <th style="width:100px;text-align:left">الإجمالي</th>
+    </tr></thead>
+    <tbody>${itemsHtml}</tbody>
+  </table>
+
+  <div class="summary-section">
+    <div class="summary-row"><span>المجموع الفرعي:</span><span>${orderDetails.subtotal.toFixed(2)} ${currentSettings.currency}</span></div>
+    ${orderDetails.couponCode ? `<div class="summary-row" style="color:#e53e3e;font-weight:700;"><span>كوبون (${orderDetails.couponCode}):</span><span>- ${(orderDetails.couponDiscountAmount || 0).toFixed(2)} ${currentSettings.currency}</span></div>` : ''}
+    ${(orderDetails.discount - (orderDetails.couponDiscountAmount || 0)) > 0.5 ? `<div class="summary-row" style="color:#e53e3e;font-weight:700;"><span>خصم الفاتورة:</span><span>- ${(orderDetails.discount - (orderDetails.couponDiscountAmount || 0)).toFixed(2)} ${currentSettings.currency}</span></div>` : ''}
+    <div class="summary-row"><span>الضريبة (${currentSettings.taxRate}%):</span><span>${orderDetails.tax.toFixed(2)} ${currentSettings.currency}</span></div>
+    <div class="summary-row total"><span>الإجمالي النهائي:</span><span>${orderDetails.total.toFixed(2)} ${currentSettings.currency}</span></div>
+  
+    ${(orderDetails.paidAmount !== undefined && orderDetails.paidAmount < orderDetails.total) ? `
+      <div class="payment-status status-debt">
+        <div>متبقي للتحصيل (آجل): ${(orderDetails.total - (orderDetails.paidAmount || 0)).toFixed(2)} ${currentSettings.currency}</div>
+        <div style="font-size:11px;opacity:0.8;margin-top:2px;">تم سداد: ${(orderDetails.paidAmount || 0).toFixed(2)} ${currentSettings.currency}</div>
+      </div>
+    ` : `
+      <div class="payment-status status-paid">✓ تم سداد الفاتورة بالكامل</div>
+    `}
+
+    ${orderDetails.notes ? `
+      <div style="margin-top:10px; padding:8px; background:#fff7ed; border-radius:8px; border:1px solid #ffedd5;">
+        <div style="font-size:11px; color:#c2410c; margin-bottom:4px; font-weight:bold;">ملاحظات:</div>
+        <div style="font-size:12px; color:#9a3412;">${orderDetails.notes}</div>
+      </div>
+    ` : ''}
+    
+    <div style="margin-top:10px; padding:8px; background:#f9fafb; border-radius:8px; border:1px solid #eee;">
+      <div style="font-size:11px; color:#64748b; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:2px; text-align:right;">تفاصيل الدفع:</div>
+      ${orderDetails.splitPayments.cash > 0 ? `<div class="summary-row" style="font-size:12px;"><span>💵 كاش:</span><span>${orderDetails.splitPayments.cash.toFixed(2)}</span></div>` : ''}
+      ${orderDetails.splitPayments.visa > 0 ? `<div class="summary-row" style="font-size:12px;"><span>💳 فيزا:</span><span>${orderDetails.splitPayments.visa.toFixed(2)}</span></div>` : ''}
+      ${orderDetails.splitPayments.wallet > 0 ? `<div class="summary-row" style="font-size:12px;"><span>📱 محفظة:</span><span>${orderDetails.splitPayments.wallet.toFixed(2)}</span></div>` : ''}
+      ${orderDetails.splitPayments.instapay > 0 ? `<div class="summary-row" style="font-size:12px;"><span>⚡ انستا باي:</span><span>${orderDetails.splitPayments.instapay.toFixed(2)}</span></div>` : ''}
+    </div>
+  </div>
+
+  <div class="footer">شكراً لثقتكم بنا - ${currentSettings.name} ترحب بكم دائماً</div>
+</div>
+<script>window.onload=()=>{setTimeout(()=>{window.print();window.onafterprint=()=>window.close();},500);}<\/script>
+</body></html>`;
+
+    const pw = window.open('', '_blank', 'width=800,height=1000');
+    if (pw) {
+      pw.document.write(html);
+      pw.document.close();
+    }
+  };
+
+  // Opens payment method modal before checkout
+  const handleCheckoutClick = (shouldPrint: boolean) => {
+    if (cart.length === 0) return;
+    doCheckout(shouldPrint);
+  };
+
+  const doCheckout = async (shouldPrint: boolean) => {
+    const currentCart = [...cart];
+    const currentSubtotal = subtotal;
+    const currentDiscount = totalDiscount;
+    const currentTax = tax;
+    const currentTotal = total;
+    const currentCustomerName = customerName;
+    const currentCustomerPhone = customerPhone;
+    const currentCustomerCard = customerId;
+    const currentCouponCode = validCoupon?.code;
+    const currentCouponDiscount = couponDiscountAmount;
+    const matchedCustomer = customers.find(c =>
+      (currentCustomerPhone && c.phone === currentCustomerPhone) ||
+      (currentCustomerCard && (c.card_number === currentCustomerCard || c.custom_id === currentCustomerCard))
+    );
+    const currentCustomId = matchedCustomer?.custom_id || currentCustomerCard;
+
+    const splitPayments = {
+      cash: parseFloat(paidCash) || 0,
+      visa: parseFloat(paidVisa) || 0,
+      wallet: parseFloat(paidWallet) || 0,
+      instapay: parseFloat(paidInstapay) || 0
+    };
+
+    const finalPaidAmount = splitPayments.cash + splitPayments.visa + splitPayments.wallet + splitPayments.instapay;
+    
+    // Handle overpayment (Change)
+    const change = Math.max(0, finalPaidAmount - currentTotal);
+    
+    let remainingChange = change;
+    let finalCash = splitPayments.cash;
+    let finalVisa = splitPayments.visa;
+    let finalWallet = splitPayments.wallet;
+    let finalInstapay = splitPayments.instapay;
+
+    if (remainingChange > 0) {
+      const deductFromCash = Math.min(finalCash, remainingChange);
+      finalCash -= deductFromCash;
+      remainingChange -= deductFromCash;
+    }
+    if (remainingChange > 0) {
+      const deductFromVisa = Math.min(finalVisa, remainingChange);
+      finalVisa -= deductFromVisa;
+      remainingChange -= deductFromVisa;
+    }
+    if (remainingChange > 0) {
+      const deductFromWallet = Math.min(finalWallet, remainingChange);
+      finalWallet -= deductFromWallet;
+      remainingChange -= deductFromWallet;
+    }
+    if (remainingChange > 0) {
+      const deductFromInstapay = Math.min(finalInstapay, remainingChange);
+      finalInstapay -= deductFromInstapay;
+      remainingChange -= deductFromInstapay;
+    }
+
+    const adjustedSplit = {
+      cash: finalCash,
+      visa: finalVisa,
+      wallet: finalWallet,
+      instapay: finalInstapay
+    };
+
+    const isAllEmpty = !paidCash && !paidVisa && !paidWallet && !paidInstapay;
+
+    // لو ما دخلتش أي مبلغ → الفاتورة كلها آجل (0 مدفوع)
+    const effectivePaidAmount = isAllEmpty ? 0 : (finalPaidAmount - change);
+    const finalSplit = isAllEmpty
+      ? { cash: 0, visa: 0, wallet: 0, instapay: 0 }
+      : adjustedSplit;
+    
+    const methods = [
+      { name: 'cash', amount: finalSplit.cash },
+      { name: 'visa', amount: finalSplit.visa },
+      { name: 'wallet', amount: finalSplit.wallet },
+      { name: 'instapay', amount: finalSplit.instapay }
+    ];
+    // لو كلها صفر (آجل كامل) → الطريقة الافتراضية cash
+    const primaryMethod = isAllEmpty ? 'cash' : methods.sort((a, b) => b.amount - a.amount)[0].name;
+
+    // ── Validate credit (آجل) sales ──────────────────────────────────────────
+    if (effectivePaidAmount < currentTotal) {
+      // لازم يكون عنده اسم + هاتف
+      if (!currentCustomerName.trim() || !currentCustomerPhone.trim()) {
+        alert("⚠️ برجاء تسجيل العميل أولاً\n\nلا يمكن إتمام البيع بالآجل بدون تحديد بيانات العميل كاملة (الاسم ورقم الهاتف).\nيرجى اختيار العميل من القائمة أو إضافته في صفحة العملاء.");
+        return;
+      }
+      // لازم يكون العميل مسجل في قاعدة البيانات (مش مجرد كتابة اسم)
+      const registeredCustomer = customers.find(c =>
+        (currentCustomerPhone && c.phone === currentCustomerPhone) ||
+        (currentCustomId && c.custom_id === currentCustomId)
+      );
+      if (!registeredCustomer) {
+        alert("⚠️ العميل غير مسجل في النظام\n\nلتسجيل المديونية بشكل صحيح يجب أن يكون العميل مسجلاً في قاعدة البيانات.\nبرجاء:\n1. اختيار العميل من قائمة الاقتراحات عند الكتابة، أو\n2. إضافة العميل أولاً من صفحة إدارة العملاء.");
+        return;
+      }
+    }
+
+    const invoiceId = await checkout(currentTotal, { name: currentCustomerName, phone: currentCustomerPhone, custom_id: currentCustomId }, effectivePaidAmount, 'sale', primaryMethod as any, finalSplit, undefined, deferredNote, currentCouponCode, currentCouponDiscount);
+
+    const details: any = {
+      cart: currentCart,
+      subtotal: currentSubtotal,
+      discount: currentDiscount,
+      tax: currentTax,
+      total: currentTotal,
+      paidAmount: effectivePaidAmount,
+      splitPayments: finalSplit,
+      customerName: currentCustomerName,
+      customerPhone: currentCustomerPhone,
+      customId: currentCustomId,
+      paymentMethod: primaryMethod,
+      totalDebt: (customerDebt || 0) + (currentTotal - effectivePaidAmount),
+      couponCode: currentCouponCode,
+      couponDiscountAmount: currentCouponDiscount
+    };
+
+    const actualCustomer = useStore.getState().customers.find(c =>
+      (currentCustomerPhone && c.phone === currentCustomerPhone) ||
+      (currentCustomerCard && (c.card_number === currentCustomerCard || c.custom_id === currentCustomerCard)) ||
+      (currentCustomId && c.custom_id === currentCustomId)
+    );
+    details.customerId = actualCustomer?.id || '';
+    details.customId = actualCustomer?.card_number || actualCustomer?.custom_id || currentCustomerCard;
+
+    setLastInvoiceId(invoiceId);
+    setLastCustomerInfo({ name: currentCustomerName, phone: currentCustomerPhone });
+    setLastOrderDetails(details);
+    playSuccessSound();
+    setShowSuccessModal(true);
+
+    if (shouldPrint) {
+      printInvoice(invoiceId, details);
+    }
+
+    setCustomerName('');
+    setCustomerPhone('');
+    setCustomerId('');
+    setPaidCash('');
+    setPaidVisa('');
+    setPaidWallet('');
+    setPaidInstapay('');
+    setDiscountStr('');
+    setCouponInput('');
+    setCustomerDebt(0);
+    setShowCustomerSuggestions(false);
+  };
+
+  const filteredCustomers = customerName.trim()
+    ? customers.filter(c => {
+      const normalizedName = normalizeArabic(c.name);
+      const normalizedQuery = normalizeArabic(customerName);
+      const customerIdShort = (c.custom_id || c.id.substring(0, 8)).toLowerCase();
+      const cardNumber = (c.card_number || '').toLowerCase();
+      return (
+        normalizedName.includes(normalizedQuery) ||
+        c.phone.includes(customerName) ||
+        customerIdShort.includes(customerName.toLowerCase()) ||
+        cardNumber.includes(customerName.toLowerCase())
+      );
+    })
+    : [];
+
+
+
+  const handleSelectCustomer = (customer: any) => {
+    setCustomerName(customer.name);
+    setCustomerPhone(customer.phone);
+    setCustomerId(customer.card_number || customer.custom_id || '');
+    setShowCustomerSuggestions(false);
+  };
+
+  const normalizedSearch = normalizeArabic(searchQuery);
+  const searchTerms = normalizedSearch.split(' ').filter(t => t.trim() !== '');
+
+  const filteredProducts = products.filter(
+    (p) => {
+      const normalizedName = normalizeArabic(p.name);
+      const matchesSearch = searchTerms.length === 0 || searchTerms.every(term => normalizedName.includes(term)) || (p.barcode && p.barcode.includes(searchQuery));
+      return !p.is_hidden && (activeCategory === 'all' || p.category_id === activeCategory) && matchesSearch;
+    }
+  );
+
+  const subtotal = cart.reduce((sum, item) => sum + item.sale_price * item.quantity, 0);
+  const totalCost = cart.reduce((sum, item) => sum + (item.average_purchase_price || item.purchase_price || 0) * item.quantity, 0);
+  const manualDiscount = Math.min(parseFloat(discountStr) || 0, subtotal);
+  
+  // Coupon Validation and Calculation
+  const appliedCoupon = couponInput.trim() ? useStore.getState().coupons.find(c => c.code === couponInput.trim().toUpperCase() && c.is_active) : null;
+  let couponDiscountAmount = 0;
+  let validCoupon: any = null;
+  let couponErrorMsg = '';
+  
+  if (appliedCoupon) {
+    const now = new Date();
+    const isValidDate = (!appliedCoupon.start_date || new Date(appliedCoupon.start_date) <= now) && (!appliedCoupon.end_date || new Date(appliedCoupon.end_date) >= now);
+    const isUnderTotalLimit = !appliedCoupon.max_uses_total || appliedCoupon.used_count < appliedCoupon.max_uses_total;
+    
+    // Calculate customer usages
+    let isUnderCustomerLimit = true;
+    if (appliedCoupon.max_uses_per_customer) {
+      if (!customerPhone && !customerId) {
+        // If coupon requires customer tracking but no customer is selected, it's invalid
+        isUnderCustomerLimit = false;
+        couponErrorMsg = 'يجب اختيار عميل لتطبيق الكوبون';
+      } else {
+        const customerUsages = useStore.getState().orders.filter(o => 
+          (o.customer?.id === customerId || o.customer?.phone === customerPhone) && 
+          o.coupon_code === appliedCoupon.code
+        ).length;
+        isUnderCustomerLimit = customerUsages < appliedCoupon.max_uses_per_customer;
+        if (!isUnderCustomerLimit) {
+            couponErrorMsg = 'تخطى العميل حد الاستخدام المسموح';
+        }
+      }
+    }
+    
+    if (!isValidDate) couponErrorMsg = 'تاريخ الكوبون غير صالح';
+    else if (!isUnderTotalLimit) couponErrorMsg = 'تخطى الكوبون إجمالي مرات الاستخدام';
+    
+    if (isValidDate && isUnderTotalLimit && isUnderCustomerLimit) {
+      validCoupon = appliedCoupon;
+      if (appliedCoupon.discount_type === 'percentage') {
+        couponDiscountAmount = (subtotal - manualDiscount) * (appliedCoupon.discount_value / 100);
+      } else {
+        couponDiscountAmount = appliedCoupon.discount_value;
+      }
+    }
+  }
+
+  const totalDiscount = manualDiscount + couponDiscountAmount;
+  const discountedSubtotal = Math.max(0, subtotal - totalDiscount);
+  const tax = discountedSubtotal * (storeSettings.taxRate / 100);
+  const total = discountedSubtotal + tax;
+  const profit = discountedSubtotal - totalCost;
+
+
+  // Sync customer debt calculation only
+  useEffect(() => {
+    if (!customerPhone && !customerId) {
+      setCustomerDebt(0);
+      return;
+    }
+    const existingCust = customers.find(c =>
+      (customerPhone && c.phone === customerPhone) ||
+      (customerId && (c.card_number === customerId || c.custom_id === customerId))
+    );
+
+    if (existingCust) {
+      const cOrders = orders.filter(o => o.customer?.id === existingCust.id && !o.is_deleted);
+      const cDebt = cOrders.reduce((sum, o) => {
+        const debt = (o.type === 'payment' ? 0 : (o.total || 0)) - (o.paid_amount || 0);
+        
+        if (debt > 0.009 && o.type !== 'payment') {
+          return sum + debt;
+        } else if (o.type === 'payment' && !(o.notes && o.notes.includes('سداد أجل للفاتورة رقم'))) {
+          return sum + debt;
+        }
+        return sum;
+      }, 0);
+      setCustomerDebt(cDebt > 0 ? cDebt : 0);
+    } else {
+      setCustomerDebt(0);
+    }
+  }, [customerPhone, customerId, orders, customers]);
+
+  const handleReturnAll = async () => {
+    if (!activeReturnOrder) return;
+    if (!confirm("هل أنت متأكد من رغبتك في استرجاع الفاتورة بالكامل؟")) return;
+
+    const itemsSum = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.quantity * item.sale_price), 0);
+    const discountRatio = itemsSum > 0 ? activeReturnOrder.total / itemsSum : 1;
+
+    const returnsArray = activeReturnOrder.items.map((item: any) => {
+      const available = item.quantity - item.returned_quantity;
+      return {
+        productId: item.id,
+        returnQty: available,
+        refundAmount: available * item.sale_price * discountRatio
+      };
+    }).filter((r: any) => r.returnQty > 0);
+
+    if (returnsArray.length > 0) {
+      await processReturn(activeReturnOrder.id, returnsArray);
+      alert('تم استرجاع الفاتورة بالكامل بنجاح');
+      const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
+      setActiveReturnOrder(updatedOrder);
+      setPendingReturns({});
+    }
+  };
+
+  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setCustomerPhone(val);
+    if (val) {
+      const match = customers.find(c => c.phone === val);
+      if (match) {
+        setCustomerName(match.name);
+        setCustomerId(match.card_number || match.custom_id || '');
+      }
+    }
+  };
+
+  const handleIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setCustomerId(val);
+    if (val) {
+      const match = customers.find(c => c.card_number === val || c.custom_id === val);
+      if (match) {
+        setCustomerName(match.name);
+        setCustomerPhone(match.phone);
+      }
+    }
+  };
+
+
+  return (
+    <div className="flex h-screen bg-gray-50 dark:bg-slate-900 transition-colors duration-300 overflow-hidden font-sans text-gray-900 dark:text-gray-100">
+
+      {/* SUCCESS MODAL */}
+      {showSuccessModal && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden border border-gray-200 dark:border-slate-700 animate-in zoom-in-95 duration-200">
+            <div className="p-8 text-center">
+              <div className="w-20 h-20 bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
+                <Banknote size={40} />
+              </div>
+              <h2 className="text-3xl font-black text-gray-900 dark:text-white mb-2">تم الدفع بنجاح!</h2>
+              <p className="text-slate-500 dark:text-slate-400 font-bold mb-6 font-mono text-lg">رقم الفاتورة: #{lastInvoiceId}</p>
+
+              <div className="space-y-3">
+                {lastCustomerInfo?.phone && (
+                  <button
+                    onClick={() => {
+                      const sendWhatsApp = (invId: string, customerPhone: string, orderDetails: any) => {
+                        if (!customerPhone.trim()) return;
+                        let itemsText = orderDetails.cart.map((item: any) => `• ${item.name} (عدد: ${item.quantity}) - ${(item.sale_price * item.quantity).toFixed(2)} ${storeSettings.currency}`).join('\n');
+                        const publicBaseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+                          ? 'https://cashier-branch3.vercel.app'
+                          : window.location.origin;
+                        const invoiceLink = `${publicBaseUrl}/view-invoice/${invId}`;
+                        const branchAddress = storeSettings.address || '';
+                        const branchLocationLink = storeSettings.locationUrl || '';
+                        const message = `*فاتورة جديدة من ${storeSettings.name}*\n\n` +
+                          `*رقم الفاتورة:* #${invId}\n` +
+                          `*التاريخ:* ${new Date().toLocaleString('ar-SA')}\n` +
+                          `*الإجمالي:* ${orderDetails.total.toFixed(2)} ${storeSettings.currency}\n\n` +
+                          `*عرض الفاتورة بالتفاصيل:*\n${invoiceLink}\n\n` +
+                          `*تفاصيل الطلب:*\n${itemsText}\n\n` +
+                          (branchAddress ? `*عنوان الفرع:* ${branchAddress}\n` : '') +
+                          (branchLocationLink ? `*لوكيشن الفرع على Google Maps:*\n${branchLocationLink}\n` : '') +
+                          `${(storeSettings.phone || storeSettings.phone2) ? `*للتواصل أو الشحن:* ${[storeSettings.phone, storeSettings.phone2].filter(Boolean).join(' - ')}\nيمكنكم التواصل هاتفيا أو واتساب، أو زيارة الفرع على العنوان الموضح.\n` : ''}` +
+                          `\n*شكراً لتعاملكم معنا، في انتظاركم مرة أخرى!*\n` +
+                          `*ما رأيك في خدمتنا؟ نسعد بتلقي ملاحظاتك.*`;
+                        let cleanPhone = customerPhone.replace(/\D/g, '');
+                        const code = storeSettings.whatsappCountryCode || '2';
+
+                        // Generic cleaning: if it starts with 0, remove and add code. 
+                        // If it doesn't have the code yet, add it.
+                        if (cleanPhone.startsWith('0')) {
+                          cleanPhone = code + cleanPhone.substring(1);
+                        } else if (!cleanPhone.startsWith(code)) {
+                          cleanPhone = code + cleanPhone;
+                        }
+
+                        const encodedMsg = encodeURIComponent(message);
+                        window.open(`https://wa.me/${cleanPhone}?text=${encodedMsg}`, '_blank');
+                      };
+                      sendWhatsApp(lastInvoiceId, lastCustomerInfo.phone, lastOrderDetails);
+                    }}
+                    className="w-full bg-[#25D366] hover:bg-[#128C7E] text-white py-4 rounded-2xl font-black flex items-center justify-center gap-3 transition-all shadow-lg scale-105"
+                  >
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" /></svg>
+                    إرسال للفاتورة لواتساب
+                  </button>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => printInvoice(lastInvoiceId, lastOrderDetails)}
+                    className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3.5 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all border border-slate-200"
+                  >
+                    <Printer size={20} /> إعادة طباعة
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowSuccessModal(false);
+                      clearCart();
+                    }}
+                    className="flex-1 bg-slate-900 hover:bg-black text-white py-3.5 rounded-2xl font-bold transition-all"
+                  >
+                    إغلاق
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNoteModal && (
+        <div className="fixed inset-0 z-[150] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col border border-gray-200 dark:border-slate-700">
+            <div className="p-6 bg-gradient-to-r from-blue-500 to-indigo-500 text-white flex justify-between items-center">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <MessageSquare size={24} /> إرسال رسالة للمدير
+              </h2>
+              <button onClick={() => setShowNoteModal(false)} className="hover:bg-white/20 p-2 rounded-full transition">
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 flex flex-col gap-4">
+              <textarea
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                placeholder="اكتب رسالتك هنا وسيتم إرسالها فوراً للمدير عبر تليجرام..."
+                className="w-full h-32 bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-2xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-bold placeholder-gray-400"
+              />
+              <button
+                onClick={handleSendNote}
+                disabled={!noteText.trim() || isSendingNote}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isSendingNote ? 'جاري الإرسال...' : <><Send size={20} /> إرسال الآن</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFinanceModal && (
+        <div className="fixed inset-0 z-[150] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col border border-gray-200 dark:border-slate-700 max-h-[90vh]">
+            <div className="p-6 bg-gradient-to-r from-emerald-500 to-teal-500 text-white flex justify-between items-center shrink-0">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Wallet size={24} /> معاملة مالية
+              </h2>
+              <button onClick={() => setShowFinanceModal(false)} className="hover:bg-white/20 p-2 rounded-full transition">
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 flex flex-col gap-4 overflow-y-auto" dir="rtl">
+              {/* Type Tabs */}
+              <div className="flex gap-1 bg-gray-100 dark:bg-slate-700 p-1 rounded-2xl">
+                <button
+                  onClick={() => setFinanceType('expense')}
+                  className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition-all ${financeType === 'expense' ? 'bg-white dark:bg-slate-600 text-red-600 dark:text-red-400 shadow-sm' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                >
+                  مصروف
+                </button>
+                <button
+                  onClick={() => setFinanceType('income')}
+                  className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition-all ${financeType === 'income' ? 'bg-white dark:bg-slate-600 text-emerald-600 dark:text-emerald-400 shadow-sm' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                >
+                  إيراد
+                </button>
+                <button
+                  onClick={() => setFinanceType('transfer')}
+                  className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition-all ${financeType === 'transfer' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                >
+                  تحويل
+                </button>
+              </div>
+
+              {financeType === 'transfer' ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">من وسيلة الدفع</label>
+                    <select
+                      className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                      value={financeTransferFrom}
+                      onChange={e => setFinanceTransferFrom(e.target.value)}
+                    >
+                      <option value="cash">كاش</option>
+                      <option value="visa">فيزا</option>
+                      <option value="wallet">محفظة</option>
+                      <option value="instapay">انستاباي</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">إلى وسيلة الدفع</label>
+                    <select
+                      className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                      value={financeTransferTo}
+                      onChange={e => setFinanceTransferTo(e.target.value)}
+                    >
+                      <option value="cash">كاش</option>
+                      <option value="visa">فيزا</option>
+                      <option value="wallet">محفظة</option>
+                      <option value="instapay">انستاباي</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">المبلغ</label>
+                    <input
+                      type="number" dir="ltr" placeholder="0.00"
+                      className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-right"
+                      value={financeTransferAmount}
+                      onChange={e => setFinanceTransferAmount(e.target.value)}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">{financeType === 'expense' ? 'فئة المصروف' : 'فئة الإيراد'}</label>
+                    <select
+                      className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-bold"
+                      value={financeCategory}
+                      onChange={e => setFinanceCategory(e.target.value)}
+                    >
+                      {financeType === 'expense' ? (
+                        <>
+                          <option value="عام">عام</option>
+                          <option value="إيجار">إيجار</option>
+                          <option value="كهرباء/مياه">كهرباء / مياه</option>
+                          <option value="رواتب">رواتب</option>
+                          <option value="نقل/توصيل">نقل / توصيل</option>
+                          <option value="صيانة">صيانة</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="عام">إيراد عام</option>
+                          <option value="خدمات">خدمات إضافية</option>
+                          <option value="استثمار">عائد استثمار</option>
+                          <option value="أخرى">أخرى</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1 text-right">كاش</label>
+                      <input type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-3 py-2.5 focus:outline-none focus:ring-1 font-bold text-right"
+                        value={financeCash} onChange={e => setFinanceCash(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1 text-right">فيزا</label>
+                      <input type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-3 py-2.5 focus:outline-none focus:ring-1 font-bold text-right"
+                        value={financeVisa} onChange={e => setFinanceVisa(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1 text-right">محفظة</label>
+                      <input type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-3 py-2.5 focus:outline-none focus:ring-1 font-bold text-right"
+                        value={financeWallet} onChange={e => setFinanceWallet(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1 text-right">انستاباي</label>
+                      <input type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-3 py-2.5 focus:outline-none focus:ring-1 font-bold text-right"
+                        value={financeInstapay} onChange={e => setFinanceInstapay(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="bg-gray-100 dark:bg-slate-700 rounded-xl p-3 flex justify-between items-center">
+                    <span className="text-sm font-bold text-slate-500 dark:text-slate-400">إجمالي المبلغ:</span>
+                    <span className={`text-xl font-black ${financeType === 'income' ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {((parseFloat(financeCash) || 0) + (parseFloat(financeVisa) || 0) + (parseFloat(financeWallet) || 0) + (parseFloat(financeInstapay) || 0)).toLocaleString()} {storeSettings.currency}
+                    </span>
+                  </div>
+                </>
+              )}
+
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">ملاحظات</label>
+                <textarea
+                  value={financeNote}
+                  onChange={(e) => setFinanceNote(e.target.value)}
+                  placeholder="اكتب ملاحظاتك هنا..."
+                  className="w-full h-20 bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none font-bold placeholder-gray-400"
+                />
+              </div>
+
+              <button
+                onClick={handleFinanceSubmit}
+                disabled={isSubmittingFinance}
+                className={`w-full font-black py-4 rounded-2xl transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-white ${
+                  financeType === 'transfer' ? 'bg-blue-600 hover:bg-blue-700' : financeType === 'income' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-500 hover:bg-red-600'
+                }`}
+              >
+                {isSubmittingFinance ? 'جاري الحفظ...' : financeType === 'transfer' ? 'تنفيذ التحويل' : 'تسجيل المعاملة'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showReturnsModal && (
+        <div className="fixed inset-0 z-[150] bg-black/50 backdrop-blur-sm flex items-start md:items-center justify-center p-4 pt-8 md:pt-4 pb-20 md:pb-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col border border-gray-200 dark:border-slate-700">
+            <div className="p-6 bg-gradient-to-r from-red-500 to-orange-500 text-white flex justify-between items-center">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <ArrowRightLeft size={24} /> نظام المرتجعات
+              </h2>
+              <button onClick={() => setShowReturnsModal(false)} className="hover:bg-white/20 p-2 rounded-full transition">
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 flex-1 flex flex-col gap-4">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="أدخل رقم الفاتورة للبحث..."
+                  className="flex-1 bg-gray-100 dark:bg-slate-700 dark:text-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-red-500 font-mono text-left"
+                  dir="ltr"
+                  value={returnSearchQuery}
+                  onChange={(e) => setReturnSearchQuery(e.target.value)}
+                />
+                <button onClick={handleSearchOrder} className="bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-xl font-bold transition shadow-lg shrink-0">بحث برقم الفاتورة</button>
+              </div>
+
+              {activeReturnOrder && (() => {
+                const itemsSum = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.quantity * item.sale_price), 0);
+                const discountRatio = itemsSum > 0 ? activeReturnOrder.total / itemsSum : 1;
+                
+                // Calculate total proposed return value based on pendingReturns state, or fall back to old calculation for summary
+                let totalPendingRefund = 0;
+                Object.values(pendingReturns).forEach(pr => {
+                  totalPendingRefund += pr.refundAmount;
+                });
+                
+                // calculate past refunds
+                const pastRefunds = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.refunded_amount || 0), 0);
+
+                return (
+                  <>
+                    {/* Financial Summary Card */}
+                    <div className="bg-slate-50 dark:bg-slate-900/50 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">العميل</span>
+                        <span className="text-sm font-black text-slate-800 dark:text-slate-200">{activeReturnOrder.customer?.name || 'عميل نقدي'}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">إجمالي الفاتورة (بعد الخصم)</span>
+                        <span className="text-sm font-black text-slate-800 dark:text-slate-200">{activeReturnOrder.total.toFixed(2)} {storeSettings.currency}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">المبلغ المدفوع</span>
+                        <span className="text-sm font-black text-green-600 dark:text-green-400">{activeReturnOrder.paid_amount.toFixed(2)} {storeSettings.currency}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">نسبة خصم الفاتورة</span>
+                        <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">{((1 - discountRatio) * 100).toFixed(1)}%</span>
+                      </div>
+                    </div>
+
+                    {/* Action/Result Status */}
+                    {totalPendingRefund > 0 && (
+                      <div className="flex flex-col gap-2 mb-4">
+                        <div className="bg-emerald-500 text-white p-4 rounded-xl shadow-lg shadow-emerald-200 dark:shadow-none flex justify-between items-center animate-pulse">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-white/20 p-2 rounded-lg"><Banknote size={24} /></div>
+                            <span className="font-black text-lg">إجمالي المبلغ الذي سيتم رده للعميل (كاش):</span>
+                          </div>
+                          <span className="text-2xl font-black">{totalPendingRefund.toFixed(2)} {storeSettings.currency}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex-1 border border-gray-200 dark:border-slate-700 flex flex-col rounded-xl overflow-hidden">
+                      <div className="bg-gray-100 dark:bg-slate-700 p-4 flex justify-between items-center border-b border-gray-200 dark:border-slate-600">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-gray-700 dark:text-gray-200 font-mono tracking-wider">الأصناف المتاحة للإرجاع</span>
+                          <span className="text-[10px] text-slate-500 font-bold">رقم الفاتورة: #{activeReturnOrder.id} | المرتجع مسبقاً: {pastRefunds.toFixed(2)} {storeSettings.currency}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={handleReturnAll}
+                            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg transition-all"
+                          >
+                            إرجاع الفاتورة بالكامل
+                          </button>
+                          <button
+                            onClick={handleConfirmReturns}
+                            disabled={Object.values(pendingReturns).filter(pr => pr.returnQty > 0).length === 0}
+                            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg transition-all"
+                          >
+                            تأكيد المرتجعات المحددة
+                          </button>
+                        </div>
+                      </div>
+                      <div className="p-4 space-y-3 max-h-72 overflow-y-auto hide-scrollbar">
+                        {activeReturnOrder.items.map((item: any) => {
+                          const available = item.quantity - item.returned_quantity;
+                          const effectivePrice = item.sale_price * discountRatio;
+                          const pr = pendingReturns[item.id] || { returnQty: 0, refundAmount: 0, returnType: 'cash' };
+                          const isDeferred = activeReturnOrder.paid_amount < activeReturnOrder.total;
+                          
+                          return (
+                            <div key={item.id} className="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-white dark:bg-slate-800 border border-gray-100 dark:border-slate-600 rounded-xl shadow-sm hover:shadow-md transition-shadow gap-4">
+                              <div className="flex flex-col flex-1">
+                                <span className="font-bold text-md text-gray-800 dark:text-gray-100">{item.name}</span>
+                                <div className="text-sm text-gray-500 dark:text-gray-400 mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                                  <span>مباع: {item.quantity}</span>
+                                  <span>مسترجع مسبقاً: <span className="text-red-500 font-bold">{item.returned_quantity}</span></span>
+                                  <span>سعر الوحدة الأصلي: {item.sale_price.toFixed(2)}</span>
+                                  <span className="text-indigo-500 font-bold">سعر الوحدة بعد الخصم: {effectivePrice.toFixed(2)}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3 w-full md:w-auto">
+                                <div className="flex flex-col gap-1 w-24">
+                                  <label className="text-[10px] font-bold text-slate-500">كمية الإرجاع</label>
+                                  <input 
+                                    type="number" 
+                                    min="0" 
+                                    max={available}
+                                    value={pr.returnQty || ''}
+                                    onChange={(e) => {
+                                      let qty = parseInt(e.target.value) || 0;
+                                      if (qty > available) qty = available;
+                                      if (qty < 0) qty = 0;
+                                      setPendingReturns(prev => ({
+                                        ...prev,
+                                        [item.id]: {
+                                          returnQty: qty,
+                                          refundAmount: prev[item.id]?.returnType === 'debt' ? 0 : qty * effectivePrice,
+                                          returnType: prev[item.id]?.returnType || 'cash'
+                                        }
+                                      }));
+                                    }}
+                                    className="w-full bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2 text-center font-bold focus:ring-2 focus:ring-red-500 outline-none"
+                                    placeholder="0"
+                                    disabled={available === 0}
+                                  />
+                                </div>
+                                {isDeferred && (
+                                  <div className="flex flex-col gap-2 w-full md:w-32 justify-center">
+                                    <label className="flex items-center gap-1 text-[11px] font-bold cursor-pointer hover:bg-slate-50 p-1 rounded">
+                                      <input type="radio" checked={pr.returnType !== 'debt'} onChange={() => setPendingReturns(prev => ({ ...prev, [item.id]: { ...prev[item.id], returnType: 'cash', refundAmount: pr.returnQty * effectivePrice } }))} className="accent-indigo-600" />
+                                      إرجاع كاش
+                                    </label>
+                                    <label className="flex items-center gap-1 text-[11px] font-bold text-indigo-600 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                                      <input type="radio" checked={pr.returnType === 'debt'} onChange={() => setPendingReturns(prev => ({ ...prev, [item.id]: { ...prev[item.id], returnType: 'debt', refundAmount: 0 } }))} className="accent-indigo-600" />
+                                      خصم من المديونية
+                                    </label>
+                                  </div>
+                                )}
+                                <div className="flex flex-col gap-1 w-32">
+                                  <label className="text-[10px] font-bold text-slate-500">المبلغ المردود ({storeSettings.currency})</label>
+                                  <input 
+                                    type="number" 
+                                    min="0" 
+                                    step="0.01"
+                                    value={pr.returnQty > 0 ? (pr.refundAmount !== undefined ? pr.refundAmount : '') : ''}
+                                    onChange={(e) => {
+                                      const amt = parseFloat(e.target.value) || 0;
+                                      setPendingReturns(prev => ({
+                                        ...prev,
+                                        [item.id]: {
+                                          ...prev[item.id],
+                                          returnQty: prev[item.id]?.returnQty || 0,
+                                          refundAmount: amt
+                                        }
+                                      }));
+                                    }}
+                                    className="w-full bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg px-3 py-2 text-center font-bold text-red-600 focus:ring-2 focus:ring-red-500 outline-none"
+                                    placeholder="0.00"
+                                    disabled={pr.returnQty === 0}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <div className={`flex-1 flex flex-col h-full pb-16 lg:pb-0 bg-white dark:bg-slate-900 shadow-2xl z-10 w-full lg:w-2/3 ${mobileView === 'cart' ? 'hidden lg:flex' : 'flex'}`}>
+        <header className="flex flex-col p-3 md:p-5 gap-4 border-b border-gray-100 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md">
+          {/* Top Row: Avatar (Right), Text (Center), Dark Mode (Left) */}
+          <div className="flex justify-between items-start w-full">
+            {/* Right: Avatar and Message */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="relative group cursor-pointer" onClick={() => { if (confirm('هل تريد تسجيل الخروج؟')) { logoutPOS(); navigate('/pos-login'); } }}>
+                <img src={activeCashier?.photo_url || storeSettings.logo} alt="Logo" className="w-12 h-12 object-cover rounded-xl shadow-md border border-gray-100 dark:border-slate-700 bg-white p-0.5 group-hover:scale-110 transition-transform" />
+                <div className="absolute -bottom-1 -right-1 bg-green-500 w-4 h-4 rounded-full border-2 border-white dark:border-slate-900"></div>
+              </div>
+              <button 
+                onClick={() => setShowNoteModal(true)}
+                className="w-12 h-12 flex items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors shadow-sm border border-blue-100 dark:border-blue-800/50"
+                title="إرسال رسالة للمدير"
+              >
+                <MessageSquare size={20} />
+              </button>
+              <button 
+                onClick={() => setShowFinanceModal(true)}
+                className="w-12 h-12 flex items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors shadow-sm border border-emerald-100 dark:border-emerald-800/50"
+                title="معاملة مالية"
+              >
+                <Wallet size={20} />
+              </button>
+            </div>
+
+            {/* Center: Text & Badges */}
+            <div className="flex flex-col items-center flex-1 px-2 text-center">
+              <div className="flex flex-col md:flex-row items-center gap-2 mb-1">
+                <h1 className="text-xl font-black bg-clip-text text-transparent bg-gradient-to-l from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400 leading-tight">
+                  أهلاً، {activeCashier?.name?.split(' ')[0] || 'المحاسب'}
+                </h1>
+                
+                {/* Offline Status Badge */}
+                {!isOnline ? (
+                  <span className="bg-red-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 animate-pulse shadow-sm">
+                    🔴 أوفلاين ({offlineQueue.length + offlineReturnsQueue.length} محلياً)
+                  </span>
+                ) : isSyncing ? (
+                  <span className="bg-amber-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
+                    ⏳ جاري الرفع...
+                  </span>
+                ) : (offlineQueue.length > 0 || offlineReturnsQueue.length > 0) ? (
+                  <button 
+                    onClick={() => { syncOfflineQueue(); syncOfflineReturnsQueue(); }}
+                    className="bg-indigo-600 text-white hover:bg-indigo-700 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 transition shadow-sm"
+                  >
+                    🔁 مزامنة ({offlineQueue.length + offlineReturnsQueue.length} معاملات)
+                  </button>
+                ) : (
+                  <span className="bg-emerald-500 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
+                    🟢 متصل
+                  </span>
+                )}
+              </div>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest leading-tight">{storeSettings.name}</span>
+            </div>
+
+            {/* Left: Dark Mode Toggle */}
+            <button onClick={toggleTheme} className="p-3 lg:p-3.5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 transition shadow-sm shrink-0">
+              {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+          </div>
+
+          {/* Bottom Row: Camera (Right), Scanner/Search (Center), Returns (Left) */}
+          <div className="flex items-center justify-between gap-2 lg:gap-4 w-full">
+            {/* Right: Camera Button */}
+            <button 
+              onClick={() => setShowCameraScanner(true)}
+              className="p-3 lg:p-3.5 rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-800 hover:bg-indigo-100 transition shadow-sm flex items-center justify-center shrink-0 w-[44px] h-[44px] lg:w-[52px] lg:h-[52px]"
+              title="مسح بالكاميرا"
+            >
+              <Camera size={20} />
+            </button>
+
+            {/* Center: Barcode Scanner & Search */}
+            <div className="flex-1 flex gap-2 lg:gap-4 justify-center max-w-2xl">
+              <div className="relative w-full group flex-1">
+                 <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full z-10 shadow-sm opacity-0 group-focus-within:opacity-100 transition-opacity whitespace-nowrap">SCAN (Enter)</span>
+                 <div className={`relative flex items-center border-2 rounded-2xl transition-colors bg-white dark:bg-slate-800 h-[44px] lg:h-[52px] w-full ${scanStatus === 'success' ? 'border-emerald-500 ring-2 ring-emerald-200' : scanStatus === 'error' ? 'border-red-500 ring-2 ring-red-200' : 'border-indigo-200 dark:border-slate-700 focus-within:border-indigo-500 shadow-inner'}`}>
+                   <ScanLine className={`absolute right-2 lg:right-3 ${scanStatus === 'success' ? 'text-emerald-500' : scanStatus === 'error' ? 'text-red-500' : 'text-indigo-500'}`} size={18} />
+                   <input
+                     type="text"
+                     dir="ltr"
+                     placeholder="قارئ الباركود"
+                     className="w-full bg-transparent border-none h-full pr-8 lg:pr-10 pl-2 lg:pl-3 text-xs lg:text-sm focus:outline-none focus:ring-0 font-mono font-bold placeholder-indigo-300 dark:placeholder-slate-500 text-indigo-700 dark:text-indigo-400 text-center"
+                     value={barcodeInput}
+                     onChange={e => setBarcodeInput(e.target.value)}
+                     onKeyDown={handleBarcodeScan}
+                   />
+                 </div>
+              </div>
+
+              {/* Desktop Only Search */}
+              <div className="relative flex-1 hidden lg:block">
+                <Search className="absolute right-4 top-3.5 text-gray-400" size={20} />
+                <input
+                  type="text"
+                  placeholder="ابحث باسم المنتج..."
+                  style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                  className="w-full h-[52px] bg-slate-100 dark:bg-slate-800 dark:text-white border-none rounded-2xl py-3.5 pr-12 pl-4 text-sm focus:outline-none focus:ring-2 shadow-inner transition"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* Left: Returns Button */}
+            <button onClick={() => setShowReturnsModal(true)} className="flex items-center justify-center gap-1.5 lg:gap-2 px-3 lg:px-5 h-[44px] lg:h-[52px] bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 rounded-2xl font-bold transition border border-red-100 dark:border-red-900/30 whitespace-nowrap shadow-sm shrink-0">
+              <RefreshCcw size={18} /> <span className="text-sm">مرتجع</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Categories Tabs */}
+        <div className="relative group bg-slate-50/50 dark:bg-slate-800/20 border-b border-gray-100 dark:border-slate-800">
+          <button 
+            onClick={() => scrollCategories('right')}
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 bg-white/90 dark:bg-slate-800/90 shadow-md p-2 rounded-l-xl border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <ChevronRight size={20} className="text-gray-600 dark:text-gray-300" />
+          </button>
+          
+          <div ref={categoriesRef} className="flex gap-3 p-5 overflow-x-auto hide-scrollbar items-center scroll-smooth">
+            <button
+              onClick={() => setActiveCategory('all')}
+              style={activeCategory === 'all' ? { background: storeSettings.themeColor } : {}}
+              className={`px-6 py-2.5 rounded-2xl whitespace-nowrap font-bold transition shadow-sm border ${activeCategory === 'all'
+                  ? 'text-white border-transparent'
+                  : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
+                }`}
+            >
+              الكل
+            </button>
+            {categories.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setActiveCategory(c.id)}
+                style={activeCategory === c.id ? { background: storeSettings.themeColor } : {}}
+                className={`px-6 py-2.5 rounded-2xl whitespace-nowrap font-bold transition shadow-sm border ${activeCategory === c.id
+                    ? 'text-white border-transparent'
+                    : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
+                  }`}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+
+          <button 
+            onClick={() => scrollCategories('left')}
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 bg-white/90 dark:bg-slate-800/90 shadow-md p-2 rounded-r-xl border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <ChevronLeft size={20} className="text-gray-600 dark:text-gray-300" />
+          </button>
+        </div>
+
+        {/* Product Catalog Grid */}
+        <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50 dark:bg-slate-900 border-l border-gray-100 dark:border-slate-800 relative">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+            {filteredProducts.map((product) => {
+              const isOutOfStock = product.stock_quantity <= 0;
+              const isLowStock = product.stock_quantity > 0 && product.stock_quantity < 5;
+              const avgPrice = product.average_purchase_price || product.purchase_price || 0;
+              const lastPrice = product.purchase_price || 0;
+
+              return (
+                <div
+                  key={product.id}
+                  onClick={() => addToCart(product)}
+                  className={`bg-white dark:bg-slate-800 p-4 rounded-3xl shadow-sm hover:shadow-xl cursor-pointer transition-all duration-300 transform hover:-translate-y-1 flex flex-col justify-between border border-gray-100 dark:border-slate-700 ring-1 ring-black/5 dark:ring-white/5 relative overflow-hidden group ${isOutOfStock ? 'opacity-60 cursor-not-allowed grayscale' : ''}`}
+                >
+                  <div className={`absolute top-0 right-0 rounded-bl-3xl rounded-tr-xl px-3 py-1 text-xs font-bold text-white shadow-sm transition-colors ${isOutOfStock ? 'bg-slate-500' : isLowStock ? 'bg-red-500' : 'bg-green-500 dark:bg-green-600'}`}>
+                    {isOutOfStock ? 'نفذت' : `${product.stock_quantity} قطعة`}
+                  </div>
+
+                  <div className="pt-2">
+                    <h3 className="font-bold text-gray-800 dark:text-gray-100 line-clamp-2 leading-tight text-base">{product.name}</h3>
+                    {/* Purchase cost info for cashier */}
+                    <div className="mt-2 space-y-0.5">
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="text-slate-400 font-medium">آخر شراء:</span>
+                        <span className="font-bold text-orange-500">{lastPrice.toFixed(2)} {storeSettings.currency}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="text-slate-400 font-medium">متوسط:</span>
+                        <span className="font-bold text-indigo-500">{avgPrice.toFixed(2)} {storeSettings.currency}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-end justify-between mt-3 pt-2 border-t border-gray-100 dark:border-slate-700">
+                    <div>
+                      <p className="text-[10px] text-slate-400 font-medium mb-0.5">سعر البيع</p>
+                      <span style={{ color: storeSettings.themeColor }} className="text-lg font-black dark:opacity-90">{product.sale_price} <span className="text-xs text-gray-500 dark:text-gray-400">{storeSettings.currency}</span></span>
+                    </div>
+                    <div style={!isOutOfStock ? { backgroundColor: storeSettings.themeColor + '15', color: storeSettings.themeColor, borderColor: storeSettings.themeColor + '30' } : {}} className={`w-9 h-9 rounded-xl flex items-center justify-center border transition-all ${isOutOfStock ? 'bg-gray-100 text-gray-400 border-gray-200 dark:bg-slate-700 dark:border-slate-600' : ''}`}>
+                      <Plus size={18} strokeWidth={3} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Cart Sidebar */}
+      <div className={`w-full pb-16 lg:pb-0 lg:w-1/3 min-w-0 lg:min-w-[320px] xl:min-w-[420px] bg-white dark:bg-slate-800 flex flex-col z-20 shadow-2xl relative ${mobileView === 'catalog' ? 'hidden lg:flex' : 'flex'}`}>
+        <div
+          style={{
+            background: `linear-gradient(160deg, ${storeSettings.themeColor} 0%, ${storeSettings.themeColor}dd 100%)`,
+            boxShadow: `0 8px 32px ${storeSettings.themeColor}66`
+          }}
+          className="p-4 text-white flex flex-col relative h-auto rounded-bl-[40px] gap-3 z-[60]"
+        >
+
+          <div className="absolute inset-0 bg-black/20 rounded-bl-[40px]"></div>
+
+          <div className="relative flex justify-between items-center mb-4">
+            <h2 className="text-xl font-black flex items-center gap-2 drop-shadow">
+              <ShoppingCart size={24} />
+              الفاتورة
+            </h2>
+            <div className="flex items-center gap-2">
+              <div className="font-mono flex items-center gap-1.5 bg-black/20 px-2.5 py-1 rounded-lg border border-white/20 text-xs">
+                <span className="opacity-80 font-sans">رقم:</span> <span className="font-bold tracking-widest">{activeInvoiceId}</span>
+              </div>
+              <div className="bg-black/20 px-3 py-1 rounded-lg text-xs font-bold border border-white/20">
+                {cart.length} الأصناف
+              </div>
+            </div>
+          </div>
+
+          {/* Customer Inputs Grid */}
+          <div className="relative flex gap-1.5 text-sm h-11">
+            <div className="flex-1 relative group">
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-indigo-400 group-focus-within:scale-110 transition-transform"><CreditCard size={14} /></span>
+              <input
+                type="text" dir="ltr" value={customerId} onChange={handleIdChange}
+                className="w-full bg-white/95 text-indigo-600 dark:text-indigo-400 placeholder-slate-400 border-0 py-2 pr-8 pl-2 rounded-xl focus:ring-2 focus:ring-white focus:outline-none transition font-black shadow-inner text-xs h-full"
+                placeholder="رقم الكارت"
+              />
+            </div>
+            <div className="flex-1 relative group">
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:scale-110 transition-transform"><Smartphone size={14} /></span>
+              <input
+                type="text" dir="ltr" value={customerPhone} onChange={handlePhoneChange}
+                className="w-full bg-white/95 text-slate-800 placeholder-slate-400 border-0 py-2 pr-8 pl-2 rounded-xl focus:ring-2 focus:ring-white focus:outline-none transition font-medium shadow-inner text-xs h-full"
+                placeholder="الموبايل"
+              />
+            </div>
+            <div className="flex-[1.2] relative group">
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:scale-110 transition-transform"><ShoppingCart size={14} /></span>
+              <input
+                type="text" value={customerName}
+                onChange={e => { setCustomerName(e.target.value); setShowCustomerSuggestions(true); }}
+                onFocus={() => setShowCustomerSuggestions(true)}
+                className="w-full bg-white/95 text-slate-800 placeholder-slate-400 border-0 py-2 pr-8 pl-2 rounded-xl focus:ring-2 focus:ring-white focus:outline-none transition font-medium shadow-inner text-xs h-full"
+                placeholder="الاسم"
+              />
+              {showCustomerSuggestions && filteredCustomers.length > 0 && (
+                <div className="absolute z-[200] left-0 right-0 top-full mt-2 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-gray-100 dark:border-slate-700 max-h-64 overflow-y-auto">
+                  {filteredCustomers.map(c => (
+                    <button
+                      key={c.id} onClick={() => handleSelectCustomer(c)}
+                      className="w-full text-right px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 flex items-center justify-between border-b border-gray-50 dark:border-slate-700 last:border-0"
+                    >
+                      <div className="flex flex-col text-right">
+                        <span className="font-bold text-slate-800 dark:text-slate-100">{c.name}</span>
+                        <span className="text-[10px] text-slate-400 font-mono" dir="ltr">{c.phone}</span>
+                      </div>
+                      <div className="bg-indigo-600 px-3 py-1.5 rounded-lg text-white font-mono text-[10px] font-black">{c.card_number || c.custom_id || c.id.substring(0, 6)}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {customerDebt > 0 && (
+            <div className="relative mt-3 bg-black/20 border border-white/20 text-white px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between">
+              <span>⚠️ مديونية سابقة:</span>
+              <span className="bg-red-500 text-white px-2 py-0.5 rounded-lg font-mono border border-red-400">{customerDebt.toFixed(2)} {storeSettings.currency}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Cart Listing */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50 dark:bg-slate-900/50" style={{ scrollbarWidth: 'thin' }}>
+          {cart.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-600 transition-opacity opacity-70">
+              <ShoppingCart size={70} className="mb-4 opacity-30 drop-shadow-md" />
+              <p className="text-xl font-semibold">السلة فارغة</p>
+              <p className="text-xs mt-2 opacity-70">أضف بعض المنتجات للبدء بحساب الفاتورة.</p>
+            </div>
+          ) : (
+            cart.map((item) => (
+              <div key={item.id} className="bg-white dark:bg-slate-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-slate-700 flex flex-col gap-2 relative overflow-hidden group hover:shadow-md transition-shadow">
+                <div className="flex justify-between items-start">
+                  <h4 className="font-bold text-gray-800 dark:text-gray-100 leading-tight w-4/5 text-sm">{item.name}</h4>
+                  <button onClick={() => removeFromCart(item.id)} className="text-red-400 hover:text-red-600 dark:text-red-500 transition-colors bg-red-50 dark:bg-red-900/20 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 absolute left-3 top-3 border border-transparent hover:border-red-100 dark:hover:border-red-900/50">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between pt-2 mt-0.5 border-t border-gray-50 dark:border-slate-700/50">
+                  <div className="flex flex-col">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase tracking-wider">سعر الوحدة:</label>
+                      <input
+                        type="number"
+                        dir="ltr"
+                        value={item.sale_price}
+                        onChange={(e) => updatePrice(item.id, parseFloat(e.target.value) || 0)}
+                        className="w-16 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 border-none rounded-md px-1.5 py-0.5 text-xs font-black focus:ring-1 focus:ring-indigo-400 transition text-center"
+                      />
+                    </div>
+                    <span className="font-black text-lg text-indigo-600 dark:text-indigo-400">
+                      {(item.sale_price * item.quantity).toFixed(2)} <span className="text-[10px] text-gray-500">{storeSettings.currency}</span>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg p-0.5 shadow-inner">
+                    <button onClick={() => updateQuantity(item.id, item.quantity - 1)} className="p-1.5 hover:bg-white dark:hover:bg-slate-600 rounded-md text-gray-600 dark:text-gray-300 transition-colors shadow-sm">
+                      <Minus size={14} strokeWidth={3} />
+                    </button>
+                    <span className="w-8 text-center text-sm font-bold dark:text-white">{item.quantity}</span>
+                    <button onClick={() => updateQuantity(item.id, item.quantity + 1)} className="p-1.5 hover:bg-white dark:hover:bg-slate-600 rounded-md text-gray-600 dark:text-gray-300 transition-colors shadow-sm">
+                      <Plus size={14} strokeWidth={3} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Footer Checkout */}
+        <div className="p-3 bg-white dark:bg-slate-800 border-t border-gray-100 dark:border-slate-700 shadow-2xl">
+          <div className="space-y-2 mb-3 px-1">
+            <div className="flex justify-between items-center text-sm font-bold text-slate-500 dark:text-slate-400">
+              <span>المجموع: <span className="text-slate-800 dark:text-slate-200 text-lg">{subtotal.toFixed(2)}</span></span>
+              <div className="flex items-center gap-2 bg-orange-100/50 dark:bg-orange-900/30 px-4 py-2 rounded-2xl border-2 border-orange-200 dark:border-orange-800/50 shadow-sm transition-all focus-within:border-orange-400 focus-within:ring-2 focus-within:ring-orange-100">
+                <span className="text-xs text-orange-600 dark:text-orange-400 font-black flex items-center gap-1">🏷️ خصم:</span>
+                <input
+                  type="number" dir="ltr" value={discountStr}
+                  onChange={(e) => setDiscountStr(e.target.value)}
+                  placeholder="0.00"
+                  className="w-20 bg-transparent border-0 p-0 text-base font-black focus:ring-0 text-left text-orange-700 dark:text-orange-300 placeholder-orange-300"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center text-sm font-bold mt-2 text-slate-500 dark:text-slate-400">
+              <span className="flex items-center gap-1">
+                كوبون:
+                {validCoupon && (
+                  <span className="text-xs bg-emerald-100 text-emerald-700 px-2 rounded-full">
+                    مفعل (خصم {couponDiscountAmount} ج.م)
+                  </span>
+                )}
+                {couponInput.trim() && !validCoupon && (
+                  <div className="flex flex-col text-right">
+                    <span className="text-xs text-red-500 font-bold">غير صالح</span>
+                    <span className="text-[10px] text-red-400 max-w-[200px] break-words">{couponErrorMsg || 'الكوبون غير موجود أو غير مفعل'}</span>
+                  </div>
+                )}
+              </span>
+              <div className="flex items-center gap-2 bg-rose-50/50 dark:bg-rose-900/30 px-4 py-2 rounded-2xl border-2 border-rose-200 dark:border-rose-800/50 shadow-sm transition-all focus-within:border-rose-400 focus-within:ring-2 focus-within:ring-rose-100">
+                <input
+                  type="text" dir="ltr" value={couponInput}
+                  onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                  placeholder="كود الخصم"
+                  className="w-28 uppercase bg-transparent border-0 p-0 text-sm font-black focus:ring-0 text-left text-rose-700 dark:text-rose-300 placeholder-rose-300"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center pt-3 mt-3 border-t border-slate-100 dark:border-slate-700/50">
+              <span className="text-xs font-black text-slate-400 uppercase tracking-widest">الإجمالي النهائي</span>
+              <div className="flex flex-col items-end">
+                <span className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-tighter">
+                  {total.toFixed(2)} <span className="text-xs text-slate-400 font-bold tracking-normal">{storeSettings.currency}</span>
+                </span>
+                {cart.length > 0 && (
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-md mt-1 border ${
+                    profit >= 0 
+                      ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 border-emerald-100 dark:border-emerald-800' 
+                      : 'text-red-500 bg-red-50 dark:bg-red-900/30 border-red-100 dark:border-red-800'
+                  }`}>
+                    ربح الفاتورة: {profit.toFixed(2)} {storeSettings.currency}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => { setShouldPrint(false); setShowCheckoutModal(true); }}
+              disabled={cart.length === 0}
+              style={cart.length > 0 ? { background: storeSettings.themeColor } : {}}
+              className="flex-1 disabled:bg-gray-300 text-white py-4 rounded-2xl font-black flex flex-col items-center justify-center gap-1 transition-all text-sm active:scale-95 shadow-lg disabled:shadow-none group"
+            >
+              <Banknote size={20} className="group-hover:scale-110 transition-transform" />
+              <span>تحصيل ودفع</span>
+            </button>
+            <button
+              onClick={() => { setShouldPrint(true); setShowCheckoutModal(true); }}
+              disabled={cart.length === 0}
+              className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-4 rounded-2xl font-black flex flex-col items-center justify-center gap-1 transition-all text-sm active:scale-95 shadow-lg shadow-emerald-500/20 disabled:shadow-none group"
+            >
+              <Printer size={20} className="group-hover:rotate-12 transition-transform" />
+              <span>دفع وطباعة</span>
+            </button>
+          </div>
+          <button onClick={clearCart} className="w-full text-slate-400 hover:text-red-500 text-xs font-bold py-3 transition-colors">
+            إلغاء الطلب والتفريغ
+          </button>
+        </div>
+      </div>
+      {/* Checkout Payment Modal */}
+      {showCheckoutModal && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-800 rounded-[32px] shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200 border border-white/20">
+            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
+              <div className="flex items-center gap-3">
+                <div className="bg-indigo-600 p-2.5 rounded-2xl text-white shadow-lg shadow-indigo-200">
+                  <Banknote size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-800 dark:text-white">توزيع مبالغ الدفع</h3>
+                  <p className="text-xs text-slate-400 font-bold">يرجى تحديد كيفية تحصيل مبلغ الفاتورة</p>
+                </div>
+              </div>
+              <button onClick={() => setShowCheckoutModal(false)} className="p-2 hover:bg-red-50 hover:text-red-500 rounded-xl transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6">
+              {/* Total Amount Card */}
+              <div className="bg-indigo-50 dark:bg-indigo-900/20 p-6 rounded-[24px] border border-indigo-100 dark:border-indigo-800/50 flex justify-between items-center">
+                <span className="text-sm font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">إجمالي المطلوب سداده</span>
+                <span className="text-4xl font-black text-indigo-600 dark:text-indigo-400 tracking-tighter">
+                  {total.toFixed(2)} <span className="text-sm font-bold opacity-60">{storeSettings.currency}</span>
+                </span>
+              </div>
+
+              {/* Payment Inputs Grid */}
+              <div className="grid grid-cols-2 gap-4">
+                {[
+                  { id: 'cash', label: 'كاش', val: paidCash, set: setPaidCash, icon: <Banknote size={18} />, color: 'indigo' },
+                  { id: 'visa', label: 'فيزا', val: paidVisa, set: setPaidVisa, icon: <CreditCard size={18} />, color: 'blue' },
+                  { id: 'wallet', label: 'محفظة', val: paidWallet, set: setPaidWallet, icon: <Smartphone size={18} />, color: 'emerald' },
+                  { id: 'insta', label: 'انستا', val: paidInstapay, set: setPaidInstapay, icon: <Zap size={18} />, color: 'orange' }
+                ].map((p) => (
+                  <div key={p.id} className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mr-1 flex items-center gap-1.5">
+                      {p.icon} {p.label}
+                    </label>
+                    <input
+                      type="number" dir="ltr" value={p.val} onChange={(e) => p.set(e.target.value)} placeholder="0.00"
+                      className="w-full bg-slate-50 dark:bg-slate-900 border-2 border-transparent focus:border-indigo-500 py-3 px-4 rounded-2xl focus:outline-none transition-all font-black text-lg text-left shadow-inner"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              {/* Summary Bar */}
+              <div className="bg-slate-100 dark:bg-slate-900 p-4 rounded-2xl flex justify-between items-center">
+                <div className="text-right">
+                  <span className="text-[10px] text-slate-400 block font-bold uppercase">إجمالي المدفوع</span>
+                  <span className="text-lg font-black text-slate-700 dark:text-slate-200">
+                    {(parseFloat(paidCash || '0') + parseFloat(paidVisa || '0') + parseFloat(paidWallet || '0') + parseFloat(paidInstapay || '0')).toFixed(2)}
+                  </span>
+                </div>
+                
+                <div className="flex gap-6">
+                  <div className="text-center">
+                    <span className="text-[10px] text-slate-400 block font-bold uppercase">المتبقي (آجل)</span>
+                    <span className={`text-lg font-black ${total - (parseFloat(paidCash || '0') + parseFloat(paidVisa || '0') + parseFloat(paidWallet || '0') + parseFloat(paidInstapay || '0')) > 0 ? 'text-red-500' : 'text-slate-400'}`}>
+                      {Math.max(0, total - (parseFloat(paidCash || '0') + parseFloat(paidVisa || '0') + parseFloat(paidWallet || '0') + parseFloat(paidInstapay || '0'))).toFixed(2)}
+                    </span>
+                  </div>
+
+                  <div className="text-left">
+                    <span className="text-[10px] text-slate-400 block font-bold uppercase">الباقي (للعميل)</span>
+                    <span className={`text-lg font-black ${(parseFloat(paidCash || '0') + parseFloat(paidVisa || '0') + parseFloat(paidWallet || '0') + parseFloat(paidInstapay || '0')) - total > 0 ? 'text-emerald-500' : 'text-slate-400'}`}>
+                      {Math.max(0, (parseFloat(paidCash || '0') + parseFloat(paidVisa || '0') + parseFloat(paidWallet || '0') + parseFloat(paidInstapay || '0')) - total).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Deferred Note Input */}
+              {Math.max(0, total - (parseFloat(paidCash || '0') + parseFloat(paidVisa || '0') + parseFloat(paidWallet || '0') + parseFloat(paidInstapay || '0'))) > 0 && (
+                <div className="mt-4">
+                  <label className="text-sm font-bold text-slate-600 dark:text-slate-300 block mb-2 flex items-center gap-2">
+                    <FileText size={16} />
+                    ملاحظة / سبب الآجل (اختياري)
+                  </label>
+                  <textarea
+                    value={deferredNote}
+                    onChange={(e) => setDeferredNote(e.target.value)}
+                    placeholder="مثال: باقي الحساب سيتم دفعه الأسبوع القادم..."
+                    className="w-full bg-slate-50 dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 rounded-xl p-3 outline-none text-sm font-medium resize-none min-h-[80px]"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="p-6 bg-slate-50 dark:bg-slate-900/50 flex gap-3">
+              <button
+                onClick={() => setShowCheckoutModal(false)}
+                className="flex-1 py-4 px-6 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-2xl font-black border border-slate-200 dark:border-slate-700 hover:bg-slate-50 transition-all active:scale-95"
+              >
+                تراجع
+              </button>
+              <button
+                onClick={() => {
+                  handleCheckoutClick(shouldPrint);
+                  setShowCheckoutModal(false);
+                }}
+                className="flex-[2] py-4 px-6 bg-indigo-600 text-white rounded-2xl font-black shadow-lg shadow-indigo-200 dark:shadow-none hover:bg-indigo-700 transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                {shouldPrint ? <Printer size={20} /> : <Banknote size={20} />}
+                تأكيد العملية وإنهاء الفاتورة
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Camera Scanner Modal */}
+      {showCameraScanner && (
+        <div className="fixed inset-0 bg-black z-[200] flex flex-col">
+          <div className="flex justify-between items-center p-4 bg-black text-white">
+            <h3 className="font-bold flex items-center gap-2"><Camera size={20} /> مسح الباركود بالكاميرا</h3>
+            <button onClick={handleCloseCamera} className="bg-white/20 p-2 rounded-full hover:bg-white/30 transition-colors"><X size={20} /></button>
+          </div>
+          <div className="flex-1 relative flex flex-col items-center justify-center bg-black p-4">
+            <div id="reader" className="w-full max-w-md mx-auto rounded-2xl overflow-hidden shadow-2xl bg-white/5"></div>
+            
+            {/* Scanned Product Popup */}
+            {scannedProduct && (
+              <div className="absolute bottom-10 left-4 right-4 bg-white dark:bg-slate-800 p-5 rounded-3xl shadow-2xl z-[210] animate-in slide-in-from-bottom-10 max-w-md mx-auto">
+                <div className="flex items-start gap-4 border-b border-gray-100 dark:border-slate-700 pb-4 mb-4">
+                  <div className="bg-emerald-100 text-emerald-600 p-3 rounded-2xl shrink-0"><Check size={24} strokeWidth={3} /></div>
+                  <div className="flex-1">
+                    <h4 className="font-black text-lg text-slate-800 dark:text-white leading-tight mb-1">{scannedProduct.name}</h4>
+                    <p className="text-emerald-600 font-bold">{scannedProduct.sale_price} {storeSettings.currency}</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-4 mb-6">
+                  <label className="font-bold text-slate-600 dark:text-slate-300">الكمية:</label>
+                  <div className="flex flex-1 items-center bg-gray-50 dark:bg-slate-700 rounded-xl p-1 border border-gray-200 dark:border-slate-600">
+                    <button onClick={() => setScanQty(Math.max(1, scanQty - 1))} className="p-3 hover:bg-white dark:hover:bg-slate-600 rounded-lg text-gray-600 dark:text-gray-300 shadow-sm"><Minus size={18} /></button>
+                    <span className="flex-1 text-center font-black text-xl dark:text-white">{scanQty}</span>
+                    <button onClick={() => setScanQty(scanQty + 1)} className="p-3 hover:bg-white dark:hover:bg-slate-600 rounded-lg text-gray-600 dark:text-gray-300 shadow-sm"><Plus size={18} /></button>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button onClick={handleConfirmScanAdd} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl shadow-lg shadow-indigo-200 dark:shadow-none hover:bg-indigo-700 transition">إضافة للفاتورة</button>
+                  <button onClick={() => {
+                    setScannedProduct(null);
+                    if (html5QrCode && html5QrCode.getState() === 3) html5QrCode.resume();
+                  }} className="bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 font-bold px-6 py-4 rounded-xl hover:bg-gray-200 dark:hover:bg-slate-600 transition">تخطي</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Bottom Navigation (Visible only on small screens) */}
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-gray-200 dark:border-slate-800 shadow-[0_-10px_30px_rgba(0,0,0,0.1)] z-[100] flex items-center justify-around px-2 pb-5 pt-2">
+        <button 
+          onClick={() => setMobileView('catalog')}
+          className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${mobileView === 'catalog' ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 shadow-inner' : 'text-gray-400 hover:text-gray-600'}`}
+        >
+          <Box size={20} className={mobileView === 'catalog' ? 'animate-bounce' : ''} />
+          <span className="text-[11px] font-bold mt-1">المنتجات</span>
+        </button>
+        <button 
+          onClick={() => setMobileView('cart')}
+          className={`flex flex-col items-center p-2 rounded-xl flex-1 relative transition-all ${mobileView === 'cart' ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 shadow-inner' : 'text-gray-400 hover:text-gray-600'}`}
+        >
+          <ShoppingCart size={20} className={mobileView === 'cart' ? 'animate-bounce' : ''} />
+          <span className="text-[11px] font-bold mt-1">الفاتورة</span>
+          {cart.length > 0 && (
+             <span className="absolute top-1 right-[25%] bg-red-500 text-white text-[10px] font-black w-5 h-5 flex items-center justify-center rounded-full shadow-md animate-pulse border-2 border-white dark:border-slate-800">{cart.length}</span>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
