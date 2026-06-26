@@ -369,6 +369,7 @@ interface CashierStore {
 
   // Cashiers
   loadCashiers: () => Promise<void>;
+  loadPosLoginData: () => Promise<void>;
   addCashier: (cashier: Omit<Cashier, 'id' | 'created_at'>) => Promise<void>;
   updateCashier: (id: string, cashier: Partial<Cashier>) => Promise<void>;
   deleteCashier: (id: string) => Promise<void>;
@@ -631,6 +632,9 @@ export const useStore = create<CashierStore>((set, get) => ({
     if (error) return false;
     sessionStorage.setItem('cashier_admin_auth', 'true');
     set({ isAdminAuthenticated: true });
+    // Reload data now that we have an authenticated session (under RLS, the
+    // initial anon load returns nothing).
+    await get().loadAll();
     return true;
   },
 
@@ -652,7 +656,28 @@ export const useStore = create<CashierStore>((set, get) => ({
     sessionStorage.setItem('cashier_pos_auth', 'true');
     sessionStorage.setItem('active_cashier_name', cashier.name);
     set({ isPOSAuthenticated: true, activeCashier: cashier });
+    // Reload data now that we have an authenticated session.
+    await get().loadAll();
     return true;
+  },
+
+  // Loads only what the cashier login screen needs (store branding + cashier
+  // names/emails) via a SECURITY DEFINER RPC, since the anon key can no longer
+  // read the tables directly after the RLS lockdown.
+  loadPosLoginData: async () => {
+    const { data, error } = await supabase.rpc('get_pos_login_data');
+    if (error || !data) return;
+    const s = (data as any).settings || {};
+    set((state) => ({
+      cashiers: ((data as any).cashiers || []) as Cashier[],
+      storeSettings: {
+        ...state.storeSettings,
+        name: s.name ?? state.storeSettings.name,
+        currency: s.currency ?? state.storeSettings.currency,
+        logo: s.logo ?? state.storeSettings.logo,
+        themeColor: s.theme_color ?? state.storeSettings.themeColor,
+      },
+    }));
   },
 
   logoutPOS: async () => {

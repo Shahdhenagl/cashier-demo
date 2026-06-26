@@ -8,10 +8,10 @@ export default function POSLogin() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
   const navigate = useNavigate();
-  const { loginPOS, storeSettings, cashiers, loadCashiers } = useStore();
+  const { loginPOS, storeSettings, cashiers, loadPosLoginData } = useStore();
 
   useEffect(() => {
-    loadCashiers();
+    loadPosLoginData();
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
