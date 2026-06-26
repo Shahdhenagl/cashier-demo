@@ -367,8 +367,31 @@ export default function Inventory() {
                   <label className="block text-sm font-bold text-slate-700 mb-1">سعر البيع لكل {getUnitConfig(formData.unit).label} <span className="text-red-500">*</span></label>
                   <input type="number" min="0" step="0.01" required value={formData.sale_price} onChange={e => setFormData({...formData, sale_price: parseFloat(e.target.value) || 0})} style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any} className="w-full bg-slate-50 border border-slate-200 py-3 px-4 rounded-xl focus:ring-2 focus:outline-none border-l-4 border-l-green-500" />
                 </div>
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-1">الكمية الحالية في المخزون</label>
+                  <div className="relative">
+                    <input
+                      type="number" min="0" step={isFractionalUnit(formData.unit) ? '0.001' : '1'}
+                      value={formData.stock_quantity}
+                      onChange={e => setFormData({...formData, stock_quantity: parseFloat(e.target.value) || 0})}
+                      style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                      className="w-full bg-slate-50 border border-slate-200 py-3 pl-16 pr-4 rounded-xl focus:ring-2 focus:outline-none border-l-4 border-l-blue-500"
+                    />
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">{getUnitConfig(formData.unit).label}</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-1">تكلفة شراء الـ{getUnitConfig(formData.unit).label} <span className="text-[10px] text-slate-400">(اختياري)</span></label>
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={formData.purchase_price}
+                    onChange={e => { const v = parseFloat(e.target.value) || 0; setFormData({...formData, purchase_price: v, average_purchase_price: v}); }}
+                    style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                    className="w-full bg-slate-50 border border-slate-200 py-3 px-4 rounded-xl focus:ring-2 focus:outline-none border-l-4 border-l-amber-500"
+                  />
+                </div>
                 <div className="col-span-2">
-                  <p className="text-xs text-slate-400 -mt-1">ℹ️ يمكن تعديل سعر البيع لاحقاً — متوسط الشراء والمخزون يُحددان تلقائياً عبر فواتير المشتريات</p>
+                  <p className="text-xs text-slate-400 -mt-1">ℹ️ هذه كمية وتكلفة المخزون الافتتاحي — بعدها يتم التحديث تلقائياً عبر فواتير المشتريات. يمكن تعديل سعر البيع لاحقاً.</p>
                 </div>
                 <div className="col-span-2">
                   <label className="block text-sm font-bold text-slate-700 mb-1">التصنيف</label>
