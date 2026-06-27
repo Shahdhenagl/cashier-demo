@@ -152,6 +152,9 @@ export default function POS() {
   const [returnSearchQuery, setReturnSearchQuery] = useState('');
   const [activeReturnOrder, setActiveReturnOrder] = useState<any>(null);
   const [pendingReturns, setPendingReturns] = useState<Record<string, { returnQty: number, refundAmount: number, returnType?: 'debt' | 'cash' }>>({});
+  // Amount of the return value applied to the customer's debt. null = automatic
+  // (settle as much debt as possible first); a number = cashier override (0 = don't deduct).
+  const [returnDebtDeduction, setReturnDebtDeduction] = useState<number | null>(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastInvoiceId, setLastInvoiceId] = useState('');
   const [lastCustomerInfo, setLastCustomerInfo] = useState<any>(null);
@@ -412,11 +415,11 @@ export default function POS() {
     const order = orders.find(o => o.id.toLowerCase() === returnSearchQuery.toLowerCase());
     if (order) {
       setActiveReturnOrder(order);
-      setPendingReturns({});
+      setPendingReturns({}); setReturnDebtDeduction(null);
     } else {
       alert("لم يتم العثور على فاتورة بهذا الرقم");
       setActiveReturnOrder(null);
-      setPendingReturns({});
+      setPendingReturns({}); setReturnDebtDeduction(null);
     }
   };
 
@@ -443,8 +446,11 @@ export default function POS() {
     // only the remainder as cash. The cash is distributed across items.
     const totalReturnValue = selected.reduce((sum, r) => sum + r.itemValue, 0);
     const outstandingDebt = Math.max(0, activeReturnOrder.total - activeReturnOrder.paid_amount);
-    const debtSettled = Math.min(totalReturnValue, outstandingDebt);
-    const cashToRefund = Math.max(0, totalReturnValue - outstandingDebt);
+    const maxDebtDeduction = Math.min(totalReturnValue, outstandingDebt);
+    const debtSettled = returnDebtDeduction === null
+      ? maxDebtDeduction
+      : Math.max(0, Math.min(returnDebtDeduction, maxDebtDeduction));
+    const cashToRefund = Math.max(0, totalReturnValue - debtSettled);
     const cashRatio = totalReturnValue > 0 ? cashToRefund / totalReturnValue : 0;
 
     const returnsArray = selected.map(r => ({
@@ -465,7 +471,7 @@ export default function POS() {
       alert('تم إرجاع المنتجات المحددة بنجاح!');
       const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
       setActiveReturnOrder(updatedOrder);
-      setPendingReturns({});
+      setPendingReturns({}); setReturnDebtDeduction(null);
     } else {
       alert("حدث خطأ أثناء الإرجاع. قد تكون الكمية غير متاحة.");
     }
@@ -908,8 +914,11 @@ export default function POS() {
     // For a deferred invoice, settle the outstanding debt first and only refund
     // the remainder as cash out of the drawer.
     const outstandingDebt = Math.max(0, activeReturnOrder.total - activeReturnOrder.paid_amount);
-    const debtSettled = Math.min(totalReturnValue, outstandingDebt);
-    const cashToRefund = Math.max(0, totalReturnValue - outstandingDebt);
+    const maxDebtDeduction = Math.min(totalReturnValue, outstandingDebt);
+    const debtSettled = returnDebtDeduction === null
+      ? maxDebtDeduction
+      : Math.max(0, Math.min(returnDebtDeduction, maxDebtDeduction));
+    const cashToRefund = Math.max(0, totalReturnValue - debtSettled);
     const cashRatio = totalReturnValue > 0 ? cashToRefund / totalReturnValue : 0;
 
     if (!confirm(
@@ -936,7 +945,7 @@ export default function POS() {
       alert('تم استرجاع الفاتورة بالكامل بنجاح');
       const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
       setActiveReturnOrder(updatedOrder);
-      setPendingReturns({});
+      setPendingReturns({}); setReturnDebtDeduction(null);
     }
   };
 
@@ -1280,8 +1289,11 @@ export default function POS() {
                   return it ? s + ((pr.returnQty || 0) * it.sale_price * discountRatio) : s;
                 }, 0);
                 const outstandingDebt = Math.max(0, activeReturnOrder.total - activeReturnOrder.paid_amount);
-                const debtSettled = Math.min(selectedReturnValue, outstandingDebt);
-                const cashToCustomer = Math.max(0, selectedReturnValue - outstandingDebt);
+                const maxDebtDeduction = Math.min(selectedReturnValue, outstandingDebt);
+                const debtSettled = returnDebtDeduction === null
+                  ? maxDebtDeduction
+                  : Math.max(0, Math.min(returnDebtDeduction, maxDebtDeduction));
+                const cashToCustomer = Math.max(0, selectedReturnValue - debtSettled);
 
                 return (
                   <>
@@ -1314,7 +1326,28 @@ export default function POS() {
                         </div>
                         <div className="bg-amber-50 dark:bg-amber-900/20 rounded-xl p-3 text-center border border-amber-200 dark:border-amber-800">
                           <div className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider">يُخصم من المديونية</div>
-                          <div className="text-lg font-black text-amber-700 dark:text-amber-400">{debtSettled.toFixed(2)}</div>
+                          {maxDebtDeduction > 0 ? (
+                            <>
+                              <input
+                                type="number"
+                                min="0"
+                                max={maxDebtDeduction}
+                                step="0.01"
+                                value={Number(debtSettled.toFixed(2))}
+                                onChange={(e) => {
+                                  const v = parseFloat(e.target.value);
+                                  setReturnDebtDeduction(isNaN(v) ? 0 : Math.max(0, Math.min(v, maxDebtDeduction)));
+                                }}
+                                className="w-full mt-1 bg-white dark:bg-slate-700 border border-amber-300 dark:border-amber-700 rounded-lg px-2 py-1 text-center text-lg font-black text-amber-700 dark:text-amber-400 focus:ring-2 focus:ring-amber-400 outline-none"
+                              />
+                              <div className="flex gap-1 mt-1 justify-center">
+                                <button type="button" onClick={() => setReturnDebtDeduction(0)} className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 hover:bg-amber-200">بدون خصم</button>
+                                <button type="button" onClick={() => setReturnDebtDeduction(null)} className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 hover:bg-amber-200">تلقائي</button>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="text-lg font-black text-amber-700 dark:text-amber-400">{debtSettled.toFixed(2)}</div>
+                          )}
                         </div>
                         <div className="bg-emerald-500 text-white rounded-xl p-3 text-center shadow-lg shadow-emerald-200 dark:shadow-none">
                           <div className="text-[10px] font-bold uppercase tracking-wider opacity-90">تدّي العميل كاش</div>
