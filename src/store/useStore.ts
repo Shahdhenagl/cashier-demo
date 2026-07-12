@@ -632,7 +632,13 @@ export const useStore = create<CashierStore>((set, get) => ({
     const { error } = await supabase.auth.signInWithPassword({ email: adminEmail, password: pin });
     if (error) return false;
     sessionStorage.setItem('cashier_admin_auth', 'true');
-    set({ isAdminAuthenticated: true });
+    sessionStorage.setItem('cashier_pos_auth', 'true');
+    sessionStorage.setItem('active_cashier_name', 'مدير النظام');
+    set({
+      isAdminAuthenticated: true,
+      isPOSAuthenticated: true,
+      activeCashier: { id: 'master', name: 'مدير النظام', pin: '123456', phone: '', photo_url: '', created_at: '' },
+    });
     // Reload data now that we have an authenticated session (under RLS, the
     // initial anon load returns nothing).
     await get().loadAll();
@@ -642,7 +648,9 @@ export const useStore = create<CashierStore>((set, get) => ({
   logout: async () => {
     await supabase.auth.signOut();
     sessionStorage.removeItem('cashier_admin_auth');
-    set({ isAdminAuthenticated: false });
+    sessionStorage.removeItem('cashier_pos_auth');
+    sessionStorage.removeItem('active_cashier_name');
+    set({ isAdminAuthenticated: false, isPOSAuthenticated: false, activeCashier: null });
   },
 
   // Cashier login: each cashier is a Supabase Auth user (email set by the
@@ -683,9 +691,10 @@ export const useStore = create<CashierStore>((set, get) => ({
 
   logoutPOS: async () => {
     await supabase.auth.signOut();
+    sessionStorage.removeItem('cashier_admin_auth');
     sessionStorage.removeItem('cashier_pos_auth');
     sessionStorage.removeItem('active_cashier_name');
-    set({ isPOSAuthenticated: false, activeCashier: null });
+    set({ isAdminAuthenticated: false, isPOSAuthenticated: false, activeCashier: null });
   },
 
   // ── Load all data from Supabase ────────────────────────────
